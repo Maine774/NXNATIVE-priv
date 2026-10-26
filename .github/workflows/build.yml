@@ -1,7 +1,17 @@
-name: Build Switch IPA
+name: Build Universal Switch IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      drive_file_id:
+        description: 'Google Drive File ID of your .nsp'
+        required: true
+        type: string
+      artifact_name:
+        description: 'Name of the output app (e.g., Mario-Wonder)'
+        required: true
+        default: 'Switch-Game-IPA'
+        type: string
 
 jobs:
   build:
@@ -31,24 +41,15 @@ jobs:
 
       - name: Deploy Raw Keys
         run: |
-          # This writes the raw keys directly to a file without needing Base64 decoding
           cat << 'EOF' > keys_input/prod.keys
           ${{ secrets.BASE64_KEYS }}
           EOF
-          
-          # Clean up any Windows carriage returns (\r) that break Linux parsers
           sed -i '' 's/\r$//' keys_input/prod.keys
 
-      - name: Download Large NSP File
+      - name: Download Large NSP via API
         run: |
-          curl -c cookies.txt -s -L "https://google.com" > confirm.html
-          CODE=$(grep -o 'confirm=[^&]*' confirm.html | head -n 1 | sed 's/confirm=//')
-          if [ -n "$CODE" ]; then
-            curl -b cookies.txt -L -o "game_input/game.nsp" "https://google.com"
-          else
-            curl -L -o "game_input/game.nsp" "https://google.com"
-          fi
-          rm -f cookies.txt confirm.html
+          # Bypasses virus scans instantly using your secure API key
+          curl -L -o "game_input/game.nsp" "https://googleapis.com{{ github.event.inputs.drive_file_id }}?alt=media&key=${{ secrets.DRIVE_API_KEY }}"
 
       - name: Run Build Script
         run: |
@@ -59,5 +60,5 @@ jobs:
       - name: Upload Finished IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Zelda-Links-Awakening-IPA
+          name: ${{ github.event.inputs.artifact_name }}
           path: game_input/*.ipa

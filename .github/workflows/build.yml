@@ -47,16 +47,20 @@ jobs:
           sed -i '' 's/\r$//' keys_input/prod.keys
 
       - name: Download Game File via API
+        env:
+          FID: ${{ github.event.inputs.drive_file_id }}
+          AKEY: ${{ secrets.DRIVE_API_KEY }}
         run: |
-          # Injecting the inputs securely into local execution strings using GitHub template notation
-          FID="${{ github.event.inputs.drive_file_id }}"
-          AKEY="${{ secrets.DRIVE_API_KEY }}"
+          # Clean and verify variables to prevent empty or malformed strings
+          CLEAN_FID=$(echo "$FID" | tr -d '[:space:]')
+          CLEAN_KEY=$(echo "$AKEY" | tr -d '[:space:]')
+
+          # 1. Fetch metadata using safe string interpolation
+          URL_META="https://googleapis.com{CLEAN_FID}?key=${CLEAN_KEY}"
+          METADATA=$(curl -s -L "$URL_META")
           
-          # 1. Fetch metadata safely
-          METADATA=$(curl -s "https://googleapis.com{FID}?key=${AKEY}")
           NAME=$(echo "$METADATA" | grep -o '"name": "[^"]*' | head -n 1 | sed 's/"name": "//')
           
-          # Default to .nsp if metadata lookup fails, otherwise keep original extension
           if [[ "$NAME" == *.xci ]]; then
             EXTENSION="xci"
           else
@@ -65,8 +69,9 @@ jobs:
           
           echo "Detected file type: .$EXTENSION"
           
-          # 2. Download binary payload
-          curl -L -o "game_input/game.${EXTENSION}" "https://googleapis.com{FID}?alt=media&key=${AKEY}"
+          # 2. Download binary payload using safe string interpolation
+          URL_DL="https://googleapis.com{CLEAN_FID}?alt=media&key=${CLEAN_KEY}"
+          curl -L -o "game_input/game.${EXTENSION}" "$URL_DL"
 
       - name: Run Build Script
         run: |

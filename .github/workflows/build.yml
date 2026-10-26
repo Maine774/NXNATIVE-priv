@@ -1,0 +1,44 @@
+name: Build Switch IPA
+
+on:
+  workflow_dispatch: # Allows you to trigger the build manually with a button
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-color: '3.12'
+
+      - name: Install macOS Dependencies
+        run: |
+          brew install xcodegen
+
+      - name: Install Python Dependencies
+        run: |
+          python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'" pycryptodome zstandard
+
+      - name: Run Build Script
+        run: |
+          # Create temporary folders matching your script structure
+          mkdir -p game_input
+          mkdir -p keys_input
+          
+          # The next step will fill these folders using GitHub Secrets
+          echo "${{ secrets.BASE64_KEYS }}" | base64 --decode > keys_input/prod.keys
+          echo "${{ secrets.BASE64_NSP }}" | base64 --decode > game_input/game.nsp
+          
+          # Execute the compile script pointing to the input folders
+          python3 scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys
+
+      - name: Upload Finished IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zelda-Links-Awakening-IPA
+          path: game_input/*.ipa

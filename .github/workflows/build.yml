@@ -51,11 +51,11 @@ jobs:
           FID: ${{ github.event.inputs.drive_file_id }}
           AKEY: ${{ secrets.DRIVE_API_KEY }}
         run: |
-          # Clean and verify variables to prevent empty or malformed strings
+          # Clean variables to remove spaces or line breaks
           CLEAN_FID=$(echo "$FID" | tr -d '[:space:]')
           CLEAN_KEY=$(echo "$AKEY" | tr -d '[:space:]')
 
-          # 1. Fetch metadata using safe string interpolation
+          # 1. Fetch metadata using the correct Google API URL structure
           URL_META="https://googleapis.com{CLEAN_FID}?key=${CLEAN_KEY}"
           METADATA=$(curl -s -L "$URL_META")
           
@@ -69,7 +69,7 @@ jobs:
           
           echo "Detected file type: .$EXTENSION"
           
-          # 2. Download binary payload using safe string interpolation
+          # 2. Download game payload using the correct Google API URL structure
           URL_DL="https://googleapis.com{CLEAN_FID}?alt=media&key=${CLEAN_KEY}"
           curl -L -o "game_input/game.${EXTENSION}" "$URL_DL"
 

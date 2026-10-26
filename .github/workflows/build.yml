@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       drive_file_id:
-        description: 'Google Drive File ID of your .nsp'
+        description: 'Google Drive File ID of your game (.nsp or .xci)'
         required: true
         type: string
       artifact_name:
@@ -46,10 +46,23 @@ jobs:
           EOF
           sed -i '' 's/\r$//' keys_input/prod.keys
 
-      - name: Download Large NSP via API
+      - name: Download Game File via API
         run: |
-          # Bypasses virus scans instantly using your secure API key
-          curl -L -o "game_input/game.nsp" "https://googleapis.com{{ github.event.inputs.drive_file_id }}?alt=media&key=${{ secrets.DRIVE_API_KEY }}"
+          # 1. Fetch metadata from Google Drive to find out if it is an NSP or XCI
+          METADATA=$(curl -s "https://googleapis.com{{ github.event.inputs.drive_file_id }}?key=${{ secrets.DRIVE_API_KEY }}")
+          NAME=$(echo "$METADATA" | grep -o '"name": "[^"]*' | head -n 1 | sed 's/"name": "//')
+          
+          # Default to .nsp if metadata lookup fails, otherwise keep original extension
+          if [[ "$NAME" == *.xci ]]; then
+            EXTENSION="xci"
+          else
+            EXTENSION="nsp"
+          fi
+          
+          echo "Detected file type: .$EXTENSION"
+          
+          # 2. Download the actual binary payload with the correct extension
+          curl -L -o "game_input/game.$EXTENSION" "https://googleapis.com{{ github.event.inputs.drive_file_id }}?alt=media&key=${{ secrets.DRIVE_API_KEY }}"
 
       - name: Run Build Script
         run: |

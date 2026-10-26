@@ -1,7 +1,7 @@
 name: Build Switch IPA
 
 on:
-  workflow_dispatch: # Allows you to trigger the build manually with a button
+  workflow_dispatch:
 
 jobs:
   build:
@@ -14,28 +14,47 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-color: '3.12'
+          python-version: '3.12'
 
       - name: Install macOS Dependencies
         run: |
-          brew install xcodegen
+          brew install xcodegen zstd spirv-cross glslang
 
       - name: Install Python Dependencies
         run: |
           python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'" pycryptodome zstandard
 
-      - name: Run Build Script
+      - name: Setup Workspace Directories
         run: |
-          # Create temporary folders matching your script structure
           mkdir -p game_input
           mkdir -p keys_input
+
+      - name: Deploy Raw Keys
+        run: |
+          # This writes the raw keys directly to a file without needing Base64 decoding
+          cat << 'EOF' > keys_input/prod.keys
+          ${{ secrets.BASE64_KEYS }}
+          EOF
           
-          # The next step will fill these folders using GitHub Secrets
-          echo "${{ secrets.BASE64_KEYS }}" | base64 --decode > keys_input/prod.keys
-          echo "${{ secrets.BASE64_NSP }}" | base64 --decode > game_input/game.nsp
-          
-          # Execute the compile script pointing to the input folders
-          python3 scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys
+          # Clean up any Windows carriage returns (\r) that break Linux parsers
+          sed -i '' 's/\r$//' keys_input/prod.keys
+
+      - name: Download Large NSP File
+        run: |
+          curl -c cookies.txt -s -L "https://google.com" > confirm.html
+          CODE=$(grep -o 'confirm=[^&]*' confirm.html | head -n 1 | sed 's/confirm=//')
+          if [ -n "$CODE" ]; then
+            curl -b cookies.txt -L -o "game_input/game.nsp" "https://google.com"
+          else
+            curl -L -o "game_input/game.nsp" "https://google.com"
+          fi
+          rm -f cookies.txt confirm.html
+
+      - name: Run Build Script
+        run: |
+          echo "Starting nxnative compilation... This can take a few minutes."
+          python3 scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+          echo "Compilation finished successfully!"
 
       - name: Upload Finished IPA
         uses: actions/upload-artifact@v4

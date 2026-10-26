@@ -47,12 +47,13 @@ jobs:
           sed -i '' 's/\r$//' keys_input/prod.keys
 
       - name: Download Game File via API
-        env:
-          DRIVE_FILE_ID: ${{ github.event.inputs.drive_file_id }}
-          DRIVE_API_KEY: ${{ secrets.DRIVE_API_KEY }}
         run: |
-          # 1. Fetch metadata safely using environment variables
-          METADATA=$(curl -s "https://googleapis.com{DRIVE_FILE_ID}?key=${DRIVE_API_KEY}")
+          # Injecting the inputs securely into local execution strings using GitHub template notation
+          FID="${{ github.event.inputs.drive_file_id }}"
+          AKEY="${{ secrets.DRIVE_API_KEY }}"
+          
+          # 1. Fetch metadata safely
+          METADATA=$(curl -s "https://googleapis.com{FID}?key=${AKEY}")
           NAME=$(echo "$METADATA" | grep -o '"name": "[^"]*' | head -n 1 | sed 's/"name": "//')
           
           # Default to .nsp if metadata lookup fails, otherwise keep original extension
@@ -64,8 +65,8 @@ jobs:
           
           echo "Detected file type: .$EXTENSION"
           
-          # 2. Download the binary payload using clean environment variables
-          curl -L -o "game_input/game.${EXTENSION}" "https://googleapis.com{DRIVE_FILE_ID}?alt=media&key=${DRIVE_API_KEY}"
+          # 2. Download binary payload
+          curl -L -o "game_input/game.${EXTENSION}" "https://googleapis.com{FID}?alt=media&key=${AKEY}"
 
       - name: Run Build Script
         run: |

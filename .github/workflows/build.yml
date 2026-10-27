@@ -1,29 +1,10 @@
-name: Build Universal Switch App via Tailscale
+name: Build Universal Switch App via Direct URL
 
 on:
   workflow_dispatch:
     inputs:
-      warning_message:
-        description: '⚠️ BEFORE RUNNING: Open terminal on laptop and run the two commands shown below!'
-        required: false
-        default: 'Read instructions in fields below 👇'
-        type: string
-      command_step_1:
-        description: 'Step 1 Command (WSL/Linux):'
-        required: false
-        default: 'cd "/mnt/c/Users/LOK0008/Downloads/Switch Roms"'
-        type: string
-      command_step_2:
-        description: 'Step 2 Command (Start Server):'
-        required: false
-        default: 'python3 -m http.server 8080'
-        type: string
-      laptop_tailscale_ip:
-        description: 'Your Laptop Tailscale IP (Starts with 100.)'
-        required: true
-        type: string
-      game_filename:
-        description: 'Exact name of the file on your laptop (e.g., Zelda.nsp or Mario.xci)'
+      game_download_url:
+        description: 'Paste the direct download URL of your .nsp or .xci'
         required: true
         type: string
       artifact_name:
@@ -47,24 +28,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Setup and Initialize Tailscale on macOS
-        env:
-          TS_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
-        run: |
-          echo "Installing Tailscale via Homebrew..."
-          brew install tailscale
-          
-          echo "Starting the Tailscale backend engine with a secure SOCKS5 proxy..."
-          sudo tailscaled --tun=userspace-networking --socks5-server=localhost:1055 &
-          sleep 5
-          
-          echo "Connecting to your private mesh network..."
-          sudo tailscale up --authkey="${TS_SECRET}" --hostname="gh-mac-runner" --timeout=5m || true
-          
-          echo "Verifying network node connectivity..."
-          sleep 5
-          tailscale status || true
 
       - name: Install macOS Dependencies
         run: |
@@ -96,26 +59,21 @@ jobs:
           EOF
           sed -i '' 's/\r$//' keys_input/prod.keys
 
-      - name: Pull File Directly From Laptop
+      - name: Direct Cloud-to-Cloud Download
         env:
-          LAPTOP_IP: ${{ github.event.inputs.laptop_tailscale_ip }}
-          FILE_NAME: ${{ github.event.inputs.game_filename }}
+          DL_URL: ${{ github.event.inputs.game_download_url }}
         run: |
-          if [[ "$FILE_NAME" == *.xci ]]; then
+          # Automatically detect if the destination file string is an XCI or NSP container
+          if [[ "$DL_URL" == *.xci* ]]; then
             EXTENSION="xci"
           else
             EXTENSION="nsp"
           fi
           
-          echo "Connecting to Python Server at $LAPTOP_IP:8080 over Tailscale SOCKS5 Proxy..."
-          
-          # URL-encode the filename spaces natively inside python so curl doesn't break
-          ENCODED_NAME=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$FILE_NAME")
-          
-          # Using curl's built-in SOCKS5 engine guarantees the traffic routes straight through the tailscale tunnel
-          curl -L --socks5-hostname localhost:1055 -o "game_input/game.${EXTENSION}" "http://${LAPTOP_IP}:8080/${ENCODED_NAME}"
-          
-          echo "File downloaded successfully!"
+          echo "Downloading game payload directly to cloud runner from target host..."
+          # This pulls the file directly down at data center speeds, completely bypassing your local network upload caps
+          curl -L -o "game_input/game.${EXTENSION}" "$DL_URL"
+          echo "Download complete!"
 
       - name: Run Build Script
         env:

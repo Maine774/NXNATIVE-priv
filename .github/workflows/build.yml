@@ -38,16 +38,14 @@ jobs:
           TS_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
           echo "Installing Tailscale via Homebrew..."
-          # Using brew completely guarantees correct architecture paths and safe binary unpacking
           brew install tailscale
           
           echo "Starting the Tailscale backend engine..."
-          # Spin up the background daemon process natively
           sudo tailscaled --tun=userspace-networking &
           sleep 5
           
           echo "Connecting to your private mesh network..."
-          # Log in using your secure OAuth client secret
+          # Standard Auth Keys do not require the '--advertise-tags' flag, passing cleanly for personal networks
           sudo tailscale up --authkey="${TS_SECRET}" --hostname="gh-mac-runner" --timeout=5m || true
           
           echo "Verifying network node connectivity..."
@@ -57,6 +55,8 @@ jobs:
       - name: Install macOS Dependencies
         run: |
           brew install xcodegen zstd spirv-cross glslang samba
+          mkdir -p /opt/homebrew/etc
+          touch /opt/homebrew/etc/smb.conf
 
       - name: Set up Python
         uses: actions/setup-python@v5

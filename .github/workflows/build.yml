@@ -160,14 +160,26 @@ jobs:
           TARGET: ${{ github.event.inputs.build_target }}
           NXNATIVE_NO_PREBUILD: "1"
           SKIP_PSO_PREBUILD: "1"
-          # Moved Xcode signing parameters securely inside the true environment variable block layer
           CODE_SIGNING_ALLOWED: "NO"
           CODE_SIGN_IDENTITY: ""
           PROVISIONING_PROFILE_SPECIFIER: ""
         run: |
-          echo "Patching script internals to bypass cloud GPU traps..."
-          sed -i '' 's/self.run_pipeline_prebuild()/# self.run_pipeline_prebuild()/g' scripts/build_ipa_from_nsp.py 2>/dev/null || true
-          sed -i '' 's/pso_prebuild/# pso_prebuild/g' scripts/build_ipa_from_nsp.py 2>/dev/null || true
+          echo "Applying deep Python script patch to neuter cloud GPU blocks..."
+          # This Python script scans the repository build utilities and injects hardcoded returns to skip pso_prebuild entirely
+          python3 -c '
+          import os
+          for root, dirs, files in os.walk("."):
+              for file in files:
+                  if file.endswith(".py"):
+                      p = os.path.join(root, file)
+                      with open(p, "r", errors="ignore") as f: content = f.read()
+                      if "run_pipeline_prebuild" in content or "pso_prebuild" in content:
+                          print(f"Patching: {p}")
+                          content = content.replace("self.run_pipeline_prebuild()", "print(\"Skipping GPU prebuild step\")")
+                          content = content.replace("run_pipeline_prebuild()", "print(\"Skipping GPU prebuild step\")")
+                          content = content.replace("pso_prebuild", "print(\"Skipping GPU prebuild\")")
+                          with open(p, "w") as f: f.write(content)
+          '
           
           echo "Starting nxnative compilation loop..."
           if [ "$TARGET" = "macos" ]; then

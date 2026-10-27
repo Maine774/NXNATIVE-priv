@@ -1,10 +1,18 @@
-name: Build Universal Switch App via Direct URL
+name: Build Universal Switch App
 
 on:
   workflow_dispatch:
     inputs:
-      game_download_url:
-        description: 'Paste the direct download URL (Supports .nsp, .xci, .zip, .rar, .7z)'
+      method_selector:
+        description: 'Choose your download method'
+        required: true
+        default: 'ddl'
+        type: choice
+        options:
+          - ddl
+          - gdrive
+      game_source_input:
+        description: 'Paste your URL link OR Google Drive File ID'
         required: true
         type: string
       artifact_name:
@@ -59,30 +67,62 @@ jobs:
           EOF
           sed -i '' 's/\r$//' keys_input/prod.keys
 
-      - name: Direct Cloud-to-Cloud Download & Auto-Extract
+      - name: Fetch and Process Game Data
         run: |
-          cat << 'EOF' > download_engine.py
-          import sys, os, urllib.request, urllib.parse, subprocess
+          cat << 'EOF' > process_game.py
+          import sys, os, urllib.request, urllib.parse, json, base64, subprocess
           
-          # Fetch input string data block
-          raw_input = """${{ github.event.inputs.game_download_url }}"""
+          method = """${{ github.event.inputs.method_selector }}""".strip()
+          raw_input = """${{ github.event.inputs.game_source_input }}""".strip()
           
-          # Clean only trailing spaces or terminal newlines without breaking internal URI encoding characters
-          raw_url = raw_input.strip()
-          clean_url = raw_url.lower()
-          
-          print("Downloading game payload directly to cloud runner...")
-          is_archive = any(x in clean_url for x in [".zip", ".rar", ".7z", "compressed", "7z"])
-          
-          if is_archive:
-              print("Archive format detected. Staging temporary archive payload...")
-              output_path = "game_input/archive_temp.tmp"
+          # Fix raw control space strings inside DDL query endpoints
+          if " " in raw_input and method == "ddl":
+              url_parts = raw_input.split('?', 1)
+              if len(url_parts) == 2:
+                  base_part, query_part = url_parts[0], url_parts[1]
+                  # Re-encode queries safely to clean out space control characters
+                  parsed_queries = urllib.parse.parse_qsl(query_part, keep_blank_values=True)
+                  cleaned_query = urllib.parse.urlencode(parsed_queries)
+                  raw_url = f"{base_part}?{cleaned_query}"
+              else:
+                  raw_url = raw_input.replace(" ", "%20")
           else:
-              ext = "xci" if ".xci" in clean_url else "nsp"
-              output_path = f"game_input/game.{ext}"
+              raw_url = raw_input
               
+          clean_url = raw_url.lower()
+          output_path = "game_input/archive_temp.tmp"
+          is_archive = False
+          
+          # Google Drive pipeline configuration
+          if method == "gdrive":
+              akey = """${{ secrets.DRIVE_API_KEY }}""".strip()
+              domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
+              
+              meta_url = f"{domain}{raw_url}?key={akey}"
+              try:
+                  req = urllib.request.Request(meta_url, headers={'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req) as response:
+                      metadata = json.loads(response.read().decode())
+                  filename = metadata.get('name', 'game.nsp').lower()
+              except Exception as e:
+                  print(f"Metadata check skipped: {e}")
+                  filename = "game.nsp"
+                  
+              is_archive = any(x in filename for x in [".zip", ".rar", ".7z", "compressed", "7z"])
+              raw_url = f"{domain}{raw_url}?alt=media&key={akey}"
+              if not is_archive:
+                  ext = "xci" if ".xci" in filename else "nsp"
+                  output_path = f"game_input/game.{ext}"
+                  
+          # Standard DDL pipeline configuration
+          else:
+              is_archive = any(x in clean_url for x in [".zip", ".rar", ".7z", "compressed", "7z"])
+              if not is_archive:
+                  ext = "xci" if ".xci" in clean_url else "nsp"
+                  output_path = f"game_input/game.{ext}"
+                  
+          print("Downloading game payload directly to cloud runner...")
           try:
-              # Parse components cleanly via native context handlers
               req = urllib.request.Request(raw_url, headers={'User-Agent': 'Mozilla/5.0'})
               with urllib.request.urlopen(req) as response, open(output_path, 'wb') as out_file:
                   block_size = 1024 * 1024
@@ -91,19 +131,19 @@ jobs:
                       if not buffer:
                           break
                       out_file.write(buffer)
-              print("Download network task complete!")
+              print("Download task complete!")
           except Exception as e:
-              print(f"Network error encountered: {e}")
+              print(f"Network error: {e}")
               sys.exit(1)
               
           if is_archive:
-              print("Unpacking the compressed archive layout via 7zz system layer...")
+              print("Unpacking compressed archive layer...")
               subprocess.run(["7zz", "x", "game_input/archive_temp.tmp", "-ogame_input/", "-y"], check=True)
               if os.path.exists("game_input/archive_temp.tmp"):
                   os.remove("game_input/archive_temp.tmp")
           EOF
           
-          python3 download_engine.py
+          python3 process_game.py
           
           echo "Searching for game contents inside workspace folder..."
           TARGET_FILE=$(find game_input -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.NSP" -o -name "*.XCI" \) -print -quit)

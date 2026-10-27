@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       game_download_url:
-        description: 'Paste the direct download URL of your .nsp or .xci'
+        description: 'Paste the direct download URL (Supports .nsp, .xci, .zip, .rar, .7z)'
         required: true
         type: string
       artifact_name:
@@ -31,7 +31,8 @@ jobs:
 
       - name: Install macOS Dependencies
         run: |
-          brew install xcodegen zstd spirv-cross glslang
+          # Added p7zip to natively support extraction of .7z and .rar archives on Mac
+          brew install xcodegen zstd spirv-cross glslang p7zip
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -59,21 +60,46 @@ jobs:
           EOF
           sed -i '' 's/\r$//' keys_input/prod.keys
 
-      - name: Direct Cloud-to-Cloud Download
+      - name: Direct Cloud-to-Cloud Download & Auto-Extract
         env:
           DL_URL: ${{ github.event.inputs.game_download_url }}
         run: |
-          # Automatically detect if the destination file string is an XCI or NSP container
-          if [[ "$DL_URL" == *.xci* ]]; then
-            EXTENSION="xci"
+          # 1. Clean up URL input to isolate queries and extract lowercased string extensions
+          CLEAN_URL=$(echo "$DL_URL" | cut -d'?' -f1 | tr '[:upper:]' '[:lower:]')
+          
+          echo "Downloading game payload directly to cloud runner..."
+          
+          # 2. Check if the link points directly to an archive type
+          if [[ "$CLEAN_URL" == *.zip ]] || [[ "$CLEAN_URL" == *.rar ]] || [[ "$CLEAN_URL" == *.7z ]]; then
+            echo "Archive format detected. Staging temporary archive payload..."
+            curl -L -o "game_input/archive_temp.tmp" "$DL_URL"
+            
+            echo "Unpacking the compressed archive..."
+            # 7z natively handles .zip, .rar, and .7z formats right out of the box
+            7zz x "game_input/archive_temp.tmp" -ogame_input/ -y
+            rm -f game_input/archive_temp.tmp
           else
-            EXTENSION="nsp"
+            # If it's a raw ROM link, pull it down normally as a base file
+            if [[ "$CLEAN_URL" == *.xci* ]]; then EXT="xci"; else EXT="nsp"; fi
+            curl -L -o "game_input/game.${EXT}" "$DL_URL"
           fi
           
-          echo "Downloading game payload directly to cloud runner from target host..."
-          # This pulls the file directly down at data center speeds, completely bypassing your local network upload caps
-          curl -L -o "game_input/game.${EXTENSION}" "$DL_URL"
-          echo "Download complete!"
+          echo "Searching for game contents inside workspace folder..."
+          # 3. Scan the workspace directory dynamically to isolate the unpacked binary format
+          TARGET_FILE=$(find game_input -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.NSP" -o -name "*.XCI" \) -print -quit)
+          
+          if [ -z "$TARGET_FILE" ]; then
+            echo "Error: No valid .nsp or .xci payload found inside the download source."
+            exit 1
+          fi
+          
+          # Extract actual game format suffix extension and normalise to lowercase
+          RAW_EXT="${TARGET_FILE##*.}"
+          EXTENSION=$(echo "$RAW_EXT" | tr '[:upper:]' '[:lower:]')
+          
+          # 4. Standardise file naming path rules for the build compiler steps
+          mv "$TARGET_FILE" "game_input/game.${EXTENSION}"
+          echo "Target game verified and configured as: game.${EXTENSION}"
 
       - name: Run Build Script
         env:

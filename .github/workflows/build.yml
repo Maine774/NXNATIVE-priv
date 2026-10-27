@@ -100,12 +100,11 @@ jobs:
         run: |
           echo "Starting nxnative compilation for target: $TARGET..."
           
-          # Check if the platform selection requires the specific Mac flag
           if [ "$TARGET" = "macos" ]; then
-            # Appends the mac build flag dynamically to the execution string
-            python3 scripts/build_ipa_from_nsp.py game_input --mac -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+            # Replaced '--mac' with the explicit correct format '--platform mac'
+            python3 scripts/build_ipa_from_nsp.py game_input --platform mac -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           else
-            python3 scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+            python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           fi
           
           echo "Compilation finished successfully!"
@@ -113,7 +112,6 @@ jobs:
       - name: Package Mac App to DMG
         if: ${{ github.event.inputs.build_target == 'macos' }}
         run: |
-          # Finds the compiled .app bundle and packs it safely into a shareable disk image
           cd game_input
           APP_NAME=$(find . -maxdepth 1 -name "*.app" -print -quit)
           if [ -n "$APP_NAME" ]; then

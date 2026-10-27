@@ -75,12 +75,10 @@ jobs:
           method = """${{ github.event.inputs.method_selector }}""".strip()
           raw_input = """${{ github.event.inputs.game_source_input }}""".strip()
           
-          # Fix raw control space strings inside DDL query endpoints
           if " " in raw_input and method == "ddl":
               url_parts = raw_input.split('?', 1)
               if len(url_parts) == 2:
                   base_part, query_part = url_parts[0], url_parts[1]
-                  # Re-encode queries safely to clean out space control characters
                   parsed_queries = urllib.parse.parse_qsl(query_part, keep_blank_values=True)
                   cleaned_query = urllib.parse.urlencode(parsed_queries)
                   raw_url = f"{base_part}?{cleaned_query}"
@@ -93,7 +91,6 @@ jobs:
           output_path = "game_input/archive_temp.tmp"
           is_archive = False
           
-          # Google Drive pipeline configuration
           if method == "gdrive":
               akey = """${{ secrets.DRIVE_API_KEY }}""".strip()
               domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
@@ -113,8 +110,6 @@ jobs:
               if not is_archive:
                   ext = "xci" if ".xci" in filename else "nsp"
                   output_path = f"game_input/game.{ext}"
-                  
-          # Standard DDL pipeline configuration
           else:
               is_archive = any(x in clean_url for x in [".zip", ".rar", ".7z", "compressed", "7z"])
               if not is_archive:
@@ -138,7 +133,8 @@ jobs:
               
           if is_archive:
               print("Unpacking compressed archive layer...")
-              subprocess.run(["7zz", "x", "game_input/archive_temp.tmp", "-ogame_input/", "-y"], check=True)
+              # Corrected tool execution name from '7zz' to native macOS '7z' format
+              subprocess.run(["7z", "x", "game_input/archive_temp.tmp", "-ogame_input/", "-y"], check=True)
               if os.path.exists("game_input/archive_temp.tmp"):
                   os.remove("game_input/archive_temp.tmp")
           EOF

@@ -60,18 +60,19 @@ jobs:
           sed -i '' 's/\r$//' keys_input/prod.keys
 
       - name: Direct Cloud-to-Cloud Download & Auto-Extract
-        env:
-          DL_URL: ${{ github.event.inputs.game_download_url }}
         run: |
-          # 1. Isolate the URL query fields to find the intended filename container string
+          # 1. Write the raw URL input safely to a file using Python to bypass shell parsing bugs completely
+          python3 -c 'import sys; open("url.txt", "w").write(sys.argv[1].strip())' "${{ github.event.inputs.game_download_url }}"
+          
+          # Read the clean string back into a standard local variable safely
+          DL_URL=$(cat url.txt)
           CLEAN_URL=$(echo "$DL_URL" | tr '[:upper:]' '[:lower:]')
           
           echo "Downloading game payload directly to cloud runner..."
           
-          # 2. Check if either the URL core path or the query headers indicate an archive format
-          if [[ "$CLEAN_URL" == *.zip* ]] || [[ "$CLEAN_URL" == *.rar* ]] || [[ "$CLEAN_URL" == *.7z* ]]; then
+          # 2. Determine if the source data string represents a compressed file signature
+          if [[ "$CLEAN_URL" == *.zip* ]] || [[ "$CLEAN_URL" == *.rar* ]] || [[ "$CLEAN_URL" == *.7z* ]] || [[ "$CLEAN_URL" == *compressed* ]] || [[ "$CLEAN_URL" == *7z* ]]; then
             echo "Archive format detected. Staging temporary archive payload..."
-            # Added absolute structural quotes around "$DL_URL" to wrap ampersands securely
             curl -L -o "game_input/archive_temp.tmp" "$DL_URL"
             
             echo "Unpacking the compressed archive..."
@@ -82,8 +83,10 @@ jobs:
             curl -L -o "game_input/game.${EXT}" "$DL_URL"
           fi
           
+          rm -f url.txt
+          
           echo "Searching for game contents inside workspace folder..."
-          # 3. Scan the workspace directory dynamically to isolate the unpacked binary format
+          # 3. Locate the unpacked binary assets recursively
           TARGET_FILE=$(find game_input -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.NSP" -o -name "*.XCI" \) -print -quit)
           
           if [ -z "$TARGET_FILE" ]; then
@@ -94,7 +97,7 @@ jobs:
           RAW_EXT="${TARGET_FILE##*.}"
           EXTENSION=$(echo "$RAW_EXT" | tr '[:upper:]' '[:lower:]')
           
-          # 4. Standardise file naming path rules for the build compiler steps
+          # 4. Normalise filenames for the compilation pipeline step rules
           mv "$TARGET_FILE" "game_input/game.${EXTENSION}"
           echo "Target game verified and configured as: game.${EXTENSION}"
 

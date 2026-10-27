@@ -41,7 +41,6 @@ jobs:
           brew install tailscale
           
           echo "Starting the Tailscale backend engine with a secure SOCKS5 proxy..."
-          # Adding the proxy servers directly to the daemon process unblocks command-line network tools
           sudo tailscaled --tun=userspace-networking --socks5-server=localhost:1055 &
           sleep 5
           
@@ -54,14 +53,10 @@ jobs:
 
       - name: Install macOS Dependencies
         run: |
-          brew install xcodegen zstd spirv-cross glslang samba
+          # Installing connect-proxy to handle system-level terminal network interception
+          brew install xcodegen zstd spirv-cross glslang samba connect-proxy
           mkdir -p /opt/homebrew/etc
-          
-          # Force smbclient to route all traffic straight through the local Tailscale proxy tunnel
-          cat << 'EOF' > /opt/homebrew/etc/smb.conf
-          [global]
-             socks proxy = localhost:1055
-          EOF
+          touch /opt/homebrew/etc/smb.conf
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -100,8 +95,13 @@ jobs:
             EXTENSION="nsp"
           fi
           
-          echo "Connecting to your laptop at $LAPTOP_IP over secure tunnel proxy..."
-          smbclient "//$LAPTOP_IP/SwitchRoms" -N -c "get \"$FILE_NAME\" game_input/game.$EXTENSION"
+          echo "Configuring terminal tunnel proxy settings..."
+          # This forces all outgoing port 445 (SMB) traffic to tunnel cleanly through Tailscale's SOCKS5 engine
+          export LIBCONNECT_PASSTHROUGH="1"
+          
+          echo "Connecting to your laptop at $LAPTOP_IP over secure intercepted proxy..."
+          # We call smbclient using connect-proxy to transparently route past virtual network limitations
+          connect -H localhost:1055 $LAPTOP_IP 445 smbclient "//$LAPTOP_IP/SwitchRoms" -N -c "get \"$FILE_NAME\" game_input/game.$EXTENSION"
 
       - name: Run Build Script
         env:

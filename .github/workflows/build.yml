@@ -62,13 +62,13 @@ jobs:
       - name: Direct Cloud-to-Cloud Download & Auto-Extract
         run: |
           cat << 'EOF' > download_engine.py
-          import sys, os, urllib.request, subprocess
+          import sys, os, urllib.request, urllib.parse, subprocess
           
-          # 1. Fetch raw input block string safely
+          # Fetch input string data block
           raw_input = """${{ github.event.inputs.game_download_url }}"""
           
-          # Automatically scrub raw spaces, literal quotes, or broken characters out of the address line
-          raw_url = raw_input.strip().replace(" ", "").replace('"', '').replace("'", "")
+          # Clean only trailing spaces or terminal newlines without breaking internal URI encoding characters
+          raw_url = raw_input.strip()
           clean_url = raw_url.lower()
           
           print("Downloading game payload directly to cloud runner...")
@@ -82,7 +82,7 @@ jobs:
               output_path = f"game_input/game.{ext}"
               
           try:
-              # Initialize clear connection headers targeting the scrubbed URL
+              # Parse components cleanly via native context handlers
               req = urllib.request.Request(raw_url, headers={'User-Agent': 'Mozilla/5.0'})
               with urllib.request.urlopen(req) as response, open(output_path, 'wb') as out_file:
                   block_size = 1024 * 1024

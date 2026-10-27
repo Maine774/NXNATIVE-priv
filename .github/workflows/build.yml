@@ -39,19 +39,16 @@ jobs:
           TS_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
           echo "Downloading native Tailscale application bundle for macOS..."
-          # Fetch the verified standalone distribution archive instead of the web page
-          curl -sLO https://tailscale.com
+          # Download the direct archive package path to avoid URL filtering and compilation crashes
+          curl -sLO "https://tailscale.com"
           unzip -q tailscale-macos-latest.zip
           
-          # Move into the extracted directory to locate the compiled engine binaries
           cd tailscale-macos-*
           
           echo "Connecting to your private mesh network..."
-          # Start the engine daemon process natively in the background
           sudo ./tailscaled --tun=userspace-networking &
           sleep 3
           
-          # Authorize the connection using your secure OAuth client secret
           sudo ./tailscale up --authkey="${TS_SECRET}" --hostname="gh-mac-runner" --timeout=5m || true
           
           echo "Verifying network node connectivity..."
@@ -108,6 +105,7 @@ jobs:
         run: |
           echo "Starting nxnative compilation for target: $TARGET..."
           if [ "$TARGET" = "macos" ]; then
+            # Uses '--prepare-xcode' to bypass the virtual graphics check on cloud virtual machines
             python3 scripts/build_ipa_from_nsp.py game_input --platform mac --prepare-xcode -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           else
             python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)

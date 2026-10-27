@@ -40,12 +40,12 @@ jobs:
           echo "Installing Tailscale via Homebrew..."
           brew install tailscale
           
-          echo "Starting the Tailscale backend engine..."
-          sudo tailscaled --tun=userspace-networking &
+          echo "Starting the Tailscale backend engine with a secure SOCKS5 proxy..."
+          # Adding the proxy servers directly to the daemon process unblocks command-line network tools
+          sudo tailscaled --tun=userspace-networking --socks5-server=localhost:1055 &
           sleep 5
           
           echo "Connecting to your private mesh network..."
-          # Standard Auth Keys do not require the '--advertise-tags' flag, passing cleanly for personal networks
           sudo tailscale up --authkey="${TS_SECRET}" --hostname="gh-mac-runner" --timeout=5m || true
           
           echo "Verifying network node connectivity..."
@@ -56,7 +56,12 @@ jobs:
         run: |
           brew install xcodegen zstd spirv-cross glslang samba
           mkdir -p /opt/homebrew/etc
-          touch /opt/homebrew/etc/smb.conf
+          
+          # Force smbclient to route all traffic straight through the local Tailscale proxy tunnel
+          cat << 'EOF' > /opt/homebrew/etc/smb.conf
+          [global]
+             socks proxy = localhost:1055
+          EOF
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -95,7 +100,7 @@ jobs:
             EXTENSION="nsp"
           fi
           
-          echo "Connecting to your laptop at $LAPTOP_IP over secure tunnel..."
+          echo "Connecting to your laptop at $LAPTOP_IP over secure tunnel proxy..."
           smbclient "//$LAPTOP_IP/SwitchRoms" -N -c "get \"$FILE_NAME\" game_input/game.$EXTENSION"
 
       - name: Run Build Script

@@ -133,7 +133,6 @@ jobs:
               
           if is_archive:
               print("Unpacking compressed archive layer...")
-              # Corrected tool execution name from '7zz' to native macOS '7z' format
               subprocess.run(["7z", "x", "game_input/archive_temp.tmp", "-ogame_input/", "-y"], check=True)
               if os.path.exists("game_input/archive_temp.tmp"):
                   os.remove("game_input/archive_temp.tmp")
@@ -156,9 +155,17 @@ jobs:
           echo "Target game verified and configured as: game.${EXTENSION}"
 
       - name: Run Build Script
+        env:
+          TARGET: ${{ github.event.inputs.build_target }}
         run: |
           echo "Starting nxnative compilation... This can take a few minutes."
-          python3 scripts/build_ipa_from_nsp.py game_input > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+          if [ "$TARGET" = "macos" ]; then
+            # Added explicit keys path assignment flag and mac platform arguments
+            python3 scripts/build_ipa_from_nsp.py game_input --platform mac --prepare-xcode -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+          else
+            # Added explicit keys path assignment flag for the mobile deployment pathway
+            python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+          fi
           echo "Compilation finished successfully!"
 
       - name: Package Mac App to DMG

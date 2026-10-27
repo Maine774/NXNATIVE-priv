@@ -40,7 +40,6 @@ jobs:
       - name: Install macOS Dependencies
         run: |
           brew install xcodegen zstd spirv-cross glslang p7zip
-          # Fix potential Xcode command line tool mapping conflicts
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
       - name: Set up Python
@@ -159,23 +158,24 @@ jobs:
       - name: Run Build Script
         env:
           TARGET: ${{ github.event.inputs.build_target }}
-          # Force python underlying scripts to bypass the real-time execution shader pre-render verification
           NXNATIVE_NO_PREBUILD: "1"
           SKIP_PSO_PREBUILD: "1"
+          # Moved Xcode signing parameters securely inside the true environment variable block layer
+          CODE_SIGNING_ALLOWED: "NO"
+          CODE_SIGN_IDENTITY: ""
+          PROVISIONING_PROFILE_SPECIFIER: ""
         run: |
           echo "Patching script internals to bypass cloud GPU traps..."
-          # Force direct structural edits to short-circuit the execution checks inside python
           sed -i '' 's/self.run_pipeline_prebuild()/# self.run_pipeline_prebuild()/g' scripts/build_ipa_from_nsp.py 2>/dev/null || true
           sed -i '' 's/pso_prebuild/# pso_prebuild/g' scripts/build_ipa_from_nsp.py 2>/dev/null || true
           
           echo "Starting nxnative compilation loop..."
           if [ "$TARGET" = "macos" ]; then
-            # Inject standard system paths and turn off code signing execution triggers to prevent runner blocks
             export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-            python3 scripts/build_ipa_from_nsp.py game_input --platform mac -k keys_input/prod.keys CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+            python3 scripts/build_ipa_from_nsp.py game_input --platform mac -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           else
             export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-            python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+            python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           fi
           echo "Compilation finished successfully!"
 
@@ -183,7 +183,6 @@ jobs:
         if: ${{ github.event.inputs.build_target == 'macos' }}
         run: |
           echo "Locating built app container bundles recursively..."
-          # Thorough search parameters covering the default workspace, sub-builds, and Xcode DerivedData pools
           APP_NAME=$(find game_input -name "*.app" -type d -print -quit)
           if [ -z "$APP_NAME" ]; then
             APP_NAME=$(find . -name "*.app" -type d -print -quit)

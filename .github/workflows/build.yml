@@ -61,32 +61,51 @@ jobs:
 
       - name: Direct Cloud-to-Cloud Download & Auto-Extract
         run: |
-          # 1. Write the raw URL input safely to a file using Python to bypass shell parsing bugs completely
-          python3 -c 'import sys; open("url.txt", "w").write(sys.argv[1].strip())' "${{ github.event.inputs.game_download_url }}"
+          # Write the download logic inside an isolated script block to eliminate Bash shell parsing conflicts completely
+          cat << 'EOF' > download_engine.py
+          import sys, os, urllib.request, subprocess
           
-          # Read the clean string back into a standard local variable safely
-          DL_URL=$(cat url.txt)
-          CLEAN_URL=$(echo "$DL_URL" | tr '[:upper:]' '[:lower:]')
+          # Safely fetch the raw string asset directly from the workflow input variable context
+          raw_url = """${{ github.event.inputs.game_download_url }}""".strip()
+          clean_url = raw_url.lower()
           
-          echo "Downloading game payload directly to cloud runner..."
+          print("Downloading game payload directly to cloud runner...")
+          is_archive = any(x in clean_url for x in [".zip", ".rar", ".7z", "compressed", "7z"])
           
-          # 2. Determine if the source data string represents a compressed file signature
-          if [[ "$CLEAN_URL" == *.zip* ]] || [[ "$CLEAN_URL" == *.rar* ]] || [[ "$CLEAN_URL" == *.7z* ]] || [[ "$CLEAN_URL" == *compressed* ]] || [[ "$CLEAN_URL" == *7z* ]]; then
-            echo "Archive format detected. Staging temporary archive payload..."
-            curl -L -o "game_input/archive_temp.tmp" "$DL_URL"
-            
-            echo "Unpacking the compressed archive..."
-            7zz x "game_input/archive_temp.tmp" -ogame_input/ -y
-            rm -f game_input/archive_temp.tmp
-          else
-            if [[ "$CLEAN_URL" == *.xci* ]]; then EXT="xci"; else EXT="nsp"; fi
-            curl -L -o "game_input/game.${EXT}" "$DL_URL"
-          fi
+          if is_archive:
+              print("Archive format detected. Staging temporary archive payload...")
+              output_path = "game_input/archive_temp.tmp"
+          else:
+              ext = "xci" if ".xci" in clean_url else "nsp"
+              output_path = f"game_input/game.{ext}"
+              
+          try:
+              # Download payload using Python's native network sockets to dodge character escape drops
+              req = urllib.request.Request(raw_url, headers={'User-Agent': 'Mozilla/5.0'})
+              with urllib.request.urlopen(req) as response, open(output_path, 'wb') as out_file:
+                  # Stream the file data safely
+                  block_size = 1024 * 1024
+                  while True:
+                      buffer = response.read(block_size)
+                      if not buffer:
+                          break
+                      out_file.write(buffer)
+              print("Download network task complete!")
+          except Exception as e:
+              print(f"Network error encountered: {e}")
+              sys.exit(1)
+              
+          if is_archive:
+              print("Unpacking the compressed archive layout via 7zz system layer...")
+              subprocess.run(["7zz", "x", "game_input/archive_temp.tmp", "-ogame_input/", "-y"], check=True)
+              if os.path.exists("game_input/archive_temp.tmp"):
+                  os.remove("game_input/archive_temp.tmp")
+          EOF
           
-          rm -f url.txt
+          python3 download_engine.py
           
           echo "Searching for game contents inside workspace folder..."
-          # 3. Locate the unpacked binary assets recursively
+          # Locate the unpacked binary files recursively
           TARGET_FILE=$(find game_input -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.NSP" -o -name "*.XCI" \) -print -quit)
           
           if [ -z "$TARGET_FILE" ]; then
@@ -97,7 +116,7 @@ jobs:
           RAW_EXT="${TARGET_FILE##*.}"
           EXTENSION=$(echo "$RAW_EXT" | tr '[:upper:]' '[:lower:]')
           
-          # 4. Normalise filenames for the compilation pipeline step rules
+          # Standardise filename paths for the compiler runner steps
           mv "$TARGET_FILE" "game_input/game.${EXTENSION}"
           echo "Target game verified and configured as: game.${EXTENSION}"
 

@@ -1,10 +1,14 @@
-name: Build Universal Switch App
+name: Build Universal Switch App via Tailscale
 
 on:
   workflow_dispatch:
     inputs:
-      drive_file_id:
-        description: 'Google Drive File ID of your game (.nsp or .xci)'
+      laptop_tailscale_ip:
+        description: 'Your Laptop Tailscale IP (Starts with 100.)'
+        required: true
+        type: string
+      game_filename:
+        description: 'Exact name of the file on your laptop (e.g., Zelda.nsp or Mario.xci)'
         required: true
         type: string
       artifact_name:
@@ -29,14 +33,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Connect to Tailscale Mesh Network
+        uses: tailscale/github-action@v2
+        with:
+          oauth-secret: '' # Leaving empty since we are using an auth key
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Install macOS Dependencies
+        run: |
+          brew install xcodegen zstd spirv-cross glslang samba
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Install macOS Dependencies
-        run: |
-          brew install xcodegen zstd spirv-cross glslang
 
       - name: Setup .NET Runtime
         uses: actions/setup-dotnet@v4
@@ -59,54 +69,33 @@ jobs:
           EOF
           sed -i '' 's/\r$//' keys_input/prod.keys
 
-      - name: Download Game File via API
+      - name: Pull File Directly From Laptop
+        env:
+          LAPTOP_IP: ${{ github.event.inputs.laptop_tailscale_ip }}
+          FILE_NAME: ${{ github.event.inputs.game_filename }}
         run: |
-          cat << 'EOF' > download_game.py
-          import os, sys, urllib.request, json, base64
+          # Detect the incoming extension layout natively
+          if [[ "$FILE_NAME" == *.xci ]]; then
+            EXTENSION="xci"
+          else
+            EXTENSION="nsp"
+          fi
           
-          fid = """${{ github.event.inputs.drive_file_id }}""".strip()
-          akey = """${{ secrets.DRIVE_API_KEY }}""".strip()
+          echo "Connecting to your laptop at $LAPTOP_IP over secure tunnel..."
           
-          domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
-          
-          # 1. Fetch metadata safely
-          meta_url = f"{domain}{fid}?key={akey}"
-          try:
-              req = urllib.request.Request(meta_url, headers={'User-Agent': 'Mozilla/5.0'})
-              with urllib.request.urlopen(req) as response:
-                  metadata = json.loads(response.read().decode())
-              filename = metadata.get('name', 'game.nsp')
-          except Exception as e:
-              print(f"Metadata check skipped or failed: {e}")
-              filename = "game.nsp"
-              
-          extension = "xci" if filename.lower().endswith('.xci') else "nsp"
-          print(f"Detected file extension: .{extension}")
-          
-          # 2. Download binary payload
-          dl_url = f"{domain}{fid}?alt=media&key={akey}"
-          output_path = f"game_input/game.{extension}"
-          
-          print("Downloading game file... This will take a moment.")
-          urllib.request.urlretrieve(dl_url, output_path)
-          print("Download complete!")
-          EOF
-          
-          python3 download_game.py
+          # Downloads the file directly out of your shared Windows folder using SMB network protocol
+          smbclient "//$LAPTOP_IP/SwitchRoms" -N -c "get \"$FILE_NAME\" game_input/game.$EXTENSION"
 
       - name: Run Build Script
         env:
           TARGET: ${{ github.event.inputs.build_target }}
         run: |
           echo "Starting nxnative compilation for target: $TARGET..."
-          
           if [ "$TARGET" = "macos" ]; then
-            # Replaced '--mac' with the explicit correct format '--platform mac'
             python3 scripts/build_ipa_from_nsp.py game_input --platform mac -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           else
             python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           fi
-          
           echo "Compilation finished successfully!"
 
       - name: Package Mac App to DMG

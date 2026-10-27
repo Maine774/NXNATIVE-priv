@@ -53,8 +53,8 @@ jobs:
 
       - name: Install macOS Dependencies
         run: |
-          # Installing connect-proxy to handle system-level terminal network interception
-          brew install xcodegen zstd spirv-cross glslang samba connect-proxy
+          # Swapped "connect-proxy" for the correct Homebrew naming convention "connect"
+          brew install xcodegen zstd spirv-cross glslang samba connect
           mkdir -p /opt/homebrew/etc
           touch /opt/homebrew/etc/smb.conf
 
@@ -95,12 +95,8 @@ jobs:
             EXTENSION="nsp"
           fi
           
-          echo "Configuring terminal tunnel proxy settings..."
-          # This forces all outgoing port 445 (SMB) traffic to tunnel cleanly through Tailscale's SOCKS5 engine
-          export LIBCONNECT_PASSTHROUGH="1"
-          
-          echo "Connecting to your laptop at $LAPTOP_IP over secure intercepted proxy..."
-          # We call smbclient using connect-proxy to transparently route past virtual network limitations
+          echo "Connecting to your laptop at $LAPTOP_IP over secure tunnel proxy..."
+          # Running the "connect" proxy wrapper tool natively to bypass Userspace networking limits
           connect -H localhost:1055 $LAPTOP_IP 445 smbclient "//$LAPTOP_IP/SwitchRoms" -N -c "get \"$FILE_NAME\" game_input/game.$EXTENSION"
 
       - name: Run Build Script

@@ -160,10 +160,9 @@ jobs:
         run: |
           echo "Starting nxnative compilation... This can take a few minutes."
           if [ "$TARGET" = "macos" ]; then
-            # Added explicit keys path assignment flag and mac platform arguments
-            python3 scripts/build_ipa_from_nsp.py game_input --platform mac --prepare-xcode -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+            # Removed '--prepare-xcode' as it conflicts directly with desktop macOS targets
+            python3 scripts/build_ipa_from_nsp.py game_input --platform mac -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           else
-            # Added explicit keys path assignment flag for the mobile deployment pathway
             python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           fi
           echo "Compilation finished successfully!"

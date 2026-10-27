@@ -3,6 +3,21 @@ name: Build Universal Switch App via Tailscale
 on:
   workflow_dispatch:
     inputs:
+      warning_message:
+        description: '⚠️ BEFORE RUNNING: Open terminal on laptop and run the two commands shown below!'
+        required: false
+        default: 'Read instructions in fields below 👇'
+        type: string
+      command_step_1:
+        description: 'Step 1 Command (WSL/Linux):'
+        required: false
+        default: 'cd "/mnt/c/Users/LOK0008/Downloads/Switch Roms"'
+        type: string
+      command_step_2:
+        description: 'Step 2 Command (Start Server):'
+        required: false
+        default: 'python3 -m http.server 8080'
+        type: string
       laptop_tailscale_ip:
         description: 'Your Laptop Tailscale IP (Starts with 100.)'
         required: true
@@ -53,10 +68,7 @@ jobs:
 
       - name: Install macOS Dependencies
         run: |
-          # Swapped "connect-proxy" for the correct Homebrew naming convention "connect"
-          brew install xcodegen zstd spirv-cross glslang samba connect
-          mkdir -p /opt/homebrew/etc
-          touch /opt/homebrew/etc/smb.conf
+          brew install xcodegen zstd spirv-cross glslang
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -95,9 +107,15 @@ jobs:
             EXTENSION="nsp"
           fi
           
-          echo "Connecting to your laptop at $LAPTOP_IP over secure tunnel proxy..."
-          # Running the "connect" proxy wrapper tool natively to bypass Userspace networking limits
-          connect -H localhost:1055 $LAPTOP_IP 445 smbclient "//$LAPTOP_IP/SwitchRoms" -N -c "get \"$FILE_NAME\" game_input/game.$EXTENSION"
+          echo "Connecting to Python Server at $LAPTOP_IP:8080 over Tailscale SOCKS5 Proxy..."
+          
+          # URL-encode the filename spaces natively inside python so curl doesn't break
+          ENCODED_NAME=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$FILE_NAME")
+          
+          # Using curl's built-in SOCKS5 engine guarantees the traffic routes straight through the tailscale tunnel
+          curl -L --socks5-hostname localhost:1055 -o "game_input/game.${EXTENSION}" "http://${LAPTOP_IP}:8080/${ENCODED_NAME}"
+          
+          echo "File downloaded successfully!"
 
       - name: Run Build Script
         env:

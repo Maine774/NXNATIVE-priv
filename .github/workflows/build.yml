@@ -31,7 +31,6 @@ jobs:
 
       - name: Install macOS Dependencies
         run: |
-          # Added p7zip to natively support extraction of .7z and .rar archives on Mac
           brew install xcodegen zstd spirv-cross glslang p7zip
 
       - name: Set up Python
@@ -64,22 +63,21 @@ jobs:
         env:
           DL_URL: ${{ github.event.inputs.game_download_url }}
         run: |
-          # 1. Clean up URL input to isolate queries and extract lowercased string extensions
-          CLEAN_URL=$(echo "$DL_URL" | cut -d'?' -f1 | tr '[:upper:]' '[:lower:]')
+          # 1. Isolate the URL query fields to find the intended filename container string
+          CLEAN_URL=$(echo "$DL_URL" | tr '[:upper:]' '[:lower:]')
           
           echo "Downloading game payload directly to cloud runner..."
           
-          # 2. Check if the link points directly to an archive type
-          if [[ "$CLEAN_URL" == *.zip ]] || [[ "$CLEAN_URL" == *.rar ]] || [[ "$CLEAN_URL" == *.7z ]]; then
+          # 2. Check if either the URL core path or the query headers indicate an archive format
+          if [[ "$CLEAN_URL" == *.zip* ]] || [[ "$CLEAN_URL" == *.rar* ]] || [[ "$CLEAN_URL" == *.7z* ]]; then
             echo "Archive format detected. Staging temporary archive payload..."
+            # Added absolute structural quotes around "$DL_URL" to wrap ampersands securely
             curl -L -o "game_input/archive_temp.tmp" "$DL_URL"
             
             echo "Unpacking the compressed archive..."
-            # 7z natively handles .zip, .rar, and .7z formats right out of the box
             7zz x "game_input/archive_temp.tmp" -ogame_input/ -y
             rm -f game_input/archive_temp.tmp
           else
-            # If it's a raw ROM link, pull it down normally as a base file
             if [[ "$CLEAN_URL" == *.xci* ]]; then EXT="xci"; else EXT="nsp"; fi
             curl -L -o "game_input/game.${EXT}" "$DL_URL"
           fi
@@ -93,7 +91,6 @@ jobs:
             exit 1
           fi
           
-          # Extract actual game format suffix extension and normalise to lowercase
           RAW_EXT="${TARGET_FILE##*.}"
           EXTENSION=$(echo "$RAW_EXT" | tr '[:upper:]' '[:lower:]')
           
@@ -102,15 +99,9 @@ jobs:
           echo "Target game verified and configured as: game.${EXTENSION}"
 
       - name: Run Build Script
-        env:
-          TARGET: ${{ github.event.inputs.build_target }}
         run: |
-          echo "Starting nxnative compilation for target: $TARGET..."
-          if [ "$TARGET" = "macos" ]; then
-            python3 scripts/build_ipa_from_nsp.py game_input --platform mac --prepare-xcode -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
-          else
-            python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
-          fi
+          echo "Starting nxnative compilation... This can take a few minutes."
+          python3 scripts/build_ipa_from_nsp.py game_input > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           echo "Compilation finished successfully!"
 
       - name: Package Mac App to DMG

@@ -61,12 +61,14 @@ jobs:
 
       - name: Direct Cloud-to-Cloud Download & Auto-Extract
         run: |
-          # Write the download logic inside an isolated script block to eliminate Bash shell parsing conflicts completely
           cat << 'EOF' > download_engine.py
           import sys, os, urllib.request, subprocess
           
-          # Safely fetch the raw string asset directly from the workflow input variable context
-          raw_url = """${{ github.event.inputs.game_download_url }}""".strip()
+          # 1. Fetch raw input block string safely
+          raw_input = """${{ github.event.inputs.game_download_url }}"""
+          
+          # Automatically scrub raw spaces, literal quotes, or broken characters out of the address line
+          raw_url = raw_input.strip().replace(" ", "").replace('"', '').replace("'", "")
           clean_url = raw_url.lower()
           
           print("Downloading game payload directly to cloud runner...")
@@ -80,10 +82,9 @@ jobs:
               output_path = f"game_input/game.{ext}"
               
           try:
-              # Download payload using Python's native network sockets to dodge character escape drops
+              # Initialize clear connection headers targeting the scrubbed URL
               req = urllib.request.Request(raw_url, headers={'User-Agent': 'Mozilla/5.0'})
               with urllib.request.urlopen(req) as response, open(output_path, 'wb') as out_file:
-                  # Stream the file data safely
                   block_size = 1024 * 1024
                   while True:
                       buffer = response.read(block_size)
@@ -105,7 +106,6 @@ jobs:
           python3 download_engine.py
           
           echo "Searching for game contents inside workspace folder..."
-          # Locate the unpacked binary files recursively
           TARGET_FILE=$(find game_input -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.NSP" -o -name "*.XCI" \) -print -quit)
           
           if [ -z "$TARGET_FILE" ]; then
@@ -116,7 +116,6 @@ jobs:
           RAW_EXT="${TARGET_FILE##*.}"
           EXTENSION=$(echo "$RAW_EXT" | tr '[:upper:]' '[:lower:]')
           
-          # Standardise filename paths for the compiler runner steps
           mv "$TARGET_FILE" "game_input/game.${EXTENSION}"
           echo "Target game verified and configured as: game.${EXTENSION}"
 

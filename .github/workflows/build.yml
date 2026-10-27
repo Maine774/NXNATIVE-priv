@@ -36,7 +36,7 @@ jobs:
       - name: Connect to Tailscale Mesh Network
         uses: tailscale/github-action@v2
         with:
-          oauth-secret: '' # Leaving empty since we are using an auth key
+          oauth-secret: ''
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
       - name: Install macOS Dependencies
@@ -74,7 +74,6 @@ jobs:
           LAPTOP_IP: ${{ github.event.inputs.laptop_tailscale_ip }}
           FILE_NAME: ${{ github.event.inputs.game_filename }}
         run: |
-          # Detect the incoming extension layout natively
           if [[ "$FILE_NAME" == *.xci ]]; then
             EXTENSION="xci"
           else
@@ -82,8 +81,6 @@ jobs:
           fi
           
           echo "Connecting to your laptop at $LAPTOP_IP over secure tunnel..."
-          
-          # Downloads the file directly out of your shared Windows folder using SMB network protocol
           smbclient "//$LAPTOP_IP/SwitchRoms" -N -c "get \"$FILE_NAME\" game_input/game.$EXTENSION"
 
       - name: Run Build Script
@@ -92,7 +89,8 @@ jobs:
         run: |
           echo "Starting nxnative compilation for target: $TARGET..."
           if [ "$TARGET" = "macos" ]; then
-            python3 scripts/build_ipa_from_nsp.py game_input --platform mac -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+            # Bypasses the virtual graphics environment check on cloud virtual machines
+            python3 scripts/build_ipa_from_nsp.py game_input --platform mac --prepare-xcode -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           else
             python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           fi

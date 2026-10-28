@@ -41,6 +41,7 @@ jobs:
         run: |
           brew install xcodegen zstd spirv-cross glslang p7zip
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -downloadComponent MetalToolchain || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -158,58 +159,103 @@ jobs:
       - name: Run Build Script
         env:
           TARGET: ${{ github.event.inputs.build_target }}
-          NXNATIVE_NO_PREBUILD: "1"
-          SKIP_PSO_PREBUILD: "1"
           CODE_SIGNING_ALLOWED: "NO"
           CODE_SIGN_IDENTITY: ""
           PROVISIONING_PROFILE_SPECIFIER: ""
         run: |
-          echo "Applying deep Python script patch to neuter cloud GPU blocks..."
-          # This Python script scans the repository build utilities and injects hardcoded returns to skip pso_prebuild entirely
+          echo "Bypassing the broken prebuild execution wrapper completely..."
           python3 -c '
           import os
-          for root, dirs, files in os.walk("."):
-              for file in files:
-                  if file.endswith(".py"):
-                      p = os.path.join(root, file)
-                      with open(p, "r", errors="ignore") as f: content = f.read()
-                      if "run_pipeline_prebuild" in content or "pso_prebuild" in content:
-                          print(f"Patching: {p}")
-                          content = content.replace("self.run_pipeline_prebuild()", "print(\"Skipping GPU prebuild step\")")
-                          content = content.replace("run_pipeline_prebuild()", "print(\"Skipping GPU prebuild step\")")
-                          content = content.replace("pso_prebuild", "print(\"Skipping GPU prebuild\")")
-                          with open(p, "w") as f: f.write(content)
+          for r, d, fs in os.walk("."):
+              for f in fs:
+                  if f.endswith(".py"):
+                      fp = os.path.join(r, f)
+                      try:
+                          with open(fp, "r", errors="ignore") as file: src = file.read()
+                          if "run_pipeline_prebuild" in src or "pso_prebuild" in src:
+                              src = src.replace("self.run_pipeline_prebuild()", "pass")
+                              src = src.replace("run_pipeline_prebuild()", "pass")
+                              src = src.replace("pso_prebuild", "pso_skip")
+                              with open(fp, "w") as file: file.write(src)
+                      except Exception: pass
           '
           
-          echo "Starting nxnative compilation loop..."
-          if [ "$TARGET" = "macos" ]; then
-            export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-            python3 scripts/build_ipa_from_nsp.py game_input --platform mac -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
-          else
-            export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-            python3 scripts/build_ipa_from_nsp.py game_input --platform ios -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
-          fi
+          echo "Starting compilation framework loop..."
+          export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
+          python3 scripts/build_ipa_from_nsp.py game_input --prepare-xcode -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           echo "Compilation finished successfully!"
 
-      - name: Package Mac App to DMG
+      - name: Assemble Standalone Mac App Bundle
         if: ${{ github.event.inputs.build_target == 'macos' }}
         run: |
-          echo "Locating built app container bundles recursively..."
-          APP_NAME=$(find game_input -name "*.app" -type d -print -quit)
-          if [ -z "$APP_NAME" ]; then
-            APP_NAME=$(find . -name "*.app" -type d -print -quit)
-          fi
-          if [ -z "$APP_NAME" ]; then
-            APP_NAME=$(find ~/Library/Developer/Xcode/DerivedData -name "*.app" -type d -print -quit 2>/dev/null)
-          fi
+          echo "Executing manual application packaging as outlined in Step 8 of the developer guide..."
+          GAME_NAME="${{ github.event.inputs.artifact_name }}"
           
-          if [ -n "$APP_NAME" ]; then
-            echo "Found bundle path at: $APP_NAME"
-            hdiutil create -volname "${{ github.event.inputs.artifact_name }}" -srcfolder "$APP_NAME" -ov -format UDZO "game_input/${{ github.event.inputs.artifact_name }}.dmg"
-          else
-            echo "Error: No compiled Mac desktop app bundle could be resolved across system paths."
+          B_DIR=$(ls -d game_input/*_build | head -n 1)
+          TID=$(basename "$B_DIR" _build)
+          P_DIR=$(ls -d "$B_DIR"/patched_v*/ | sort -V | tail -n 1)
+          P_DIR="${P_DIR%/}"
+          V_NUM="${P_DIR##*patched_}"
+          
+          APP_DIR="game_input/$GAME_NAME.app"
+          R_DIR="$APP_DIR/Contents/Resources"
+          
+          mkdir -p "$R_DIR/patched" "$R_DIR/romfs" "$R_DIR/msl" "$R_DIR/font" "$R_DIR/profile" "$APP_DIR/Contents/MacOS"
+          
+          cp -c "$B_DIR/tools/dmhost" "$R_DIR/" || cp "$B_DIR/tools/dmhost" "$R_DIR/"
+          cp -cR "$P_DIR/" "$R_DIR/patched/" || cp -R "$P_DIR/" "$R_DIR/patched/"
+          cp -cR "$B_DIR/extract/$V_NUM/RomFS/" "$R_DIR/romfs/" || cp -R "$B_DIR/extract/$V_NUM/RomFS/" "$R_DIR/romfs/"
+          cp -cR "$B_DIR/shader/cache/" "$R_DIR/msl/" || cp -R "$B_DIR/shader/cache/" "$R_DIR/msl/"
+          cp -cR "$B_DIR/font/" "$R_DIR/font/" || cp -R "$B_DIR/font/" "$R_DIR/font/"
+          cp -cR dm/games/$TID/ "$R_DIR/profile/" || true
+          [ -d "$B_DIR/aoc" ] && (cp -cR "$B_DIR/aoc/" "$R_DIR/aoc/" || cp -R "$B_DIR/aoc/" "$R_DIR/aoc/")
+          
+          printf '%s\n' '#!/bin/bash' \
+          'R="$(cd "$(dirname "$0")/../Resources" && pwd)"' \
+          'N="$(basename "$(dirname "$(dirname "$R")")" .app)"' \
+          'D="$HOME/Library/Application Support/$N"' \
+          'mkdir -p "$D/save" "$D/temp"; cd "$D"' \
+          'export DM_ROOT="$D" DM_SAVE="$D/save" DM_TEMP="$D/temp" DM_ROMFS="$R/romfs" DM_MSL_DIR="$R/msl" DM_FONT_DIR="$R/font" DM_LANG=en-US DM_WINDOW=1 DM_AUDIO=1' \
+          '[ -f "$R/profile/shader_map.tsv" ] && export DM_NVN_SHMAP="$R/profile/shader_map.tsv"' \
+          '[ -d "$R/aoc" ] && export DM_AOC_DIR="$R/aoc"' \
+          'exec "$R/dmhost" "$R/patched" > "$D/log.txt" 2>&1' > "$APP_DIR/Contents/MacOS/launch"
+          
+          chmod +x "$APP_DIR/Contents/MacOS/launch"
+          
+          plutil -create xml1 "$APP_DIR/Contents/Info.plist"
+          for kv in "CFBundleExecutable launch" "CFBundleName $GAME_NAME" "CFBundleIdentifier org.nxnative.mac.$TID" "CFBundlePackageType APPL" "CFBundleIconFile AppIcon"; do 
+            plutil -insert "${kv%% *}" -string "${kv#* }" "$APP_DIR/Contents/Info.plist"
+          done
+
+          IMG_SRC=$(find "$B_DIR"/extract -type f -name "icon.jpg" -print -quit)
+          if [ -n "$IMG_SRC" ] && [ -f "$IMG_SRC" ]; then
+            sips -s format icns "$IMG_SRC" --out "$R_DIR/AppIcon.icns" >/dev/null || true
+          fi
+
+          hdiutil create \
+            -volname "$GAME_NAME" \
+            -srcfolder "$APP_DIR" \
+            -ov \
+            -format UDZO \
+            "game_input/$GAME_NAME.dmg"
+
+          echo "Mac Desktop Bundle Created Successfully!"
+
+      - name: Package iOS App Bundle
+        if: ${{ github.event.inputs.build_target == 'ios' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Packaging mobile package payload variables..."
+
+          IPA_FILE=$(find game_input -type f -name "*.ipa" -print -quit)
+
+          if [ -z "$IPA_FILE" ]; then
+            echo "Error: No IPA file found."
             exit 1
           fi
+
+          mv "$IPA_FILE" "game_input/${{ github.event.inputs.artifact_name }}.ipa"
 
       - name: Upload Finished Artifact
         uses: actions/upload-artifact@v4
@@ -218,3 +264,4 @@ jobs:
           path: |
             game_input/*.ipa
             game_input/*.dmg
+          if-no-files-found: error

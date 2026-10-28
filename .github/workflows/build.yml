@@ -183,61 +183,29 @@ jobs:
           echo "Starting compilation framework loop..."
           export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
           if [ "$TARGET" = "macos" ]; then
-            PLATFORM_ARGS="--platform mac"
+            echo "Target: macOS app (--platform mac-app, no offline pipeline archive: --gpu none)"
+            python3 scripts/build_ipa_from_nsp.py game_input --platform mac-app --gpu none \
+              -o "game_input/${{ github.event.inputs.artifact_name }}.app" \
+              -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           else
-            PLATFORM_ARGS="--prepare-xcode"
+            echo "Target: iOS IPA (--platform ios)"
+            python3 scripts/build_ipa_from_nsp.py game_input --platform ios \
+              -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           fi
-          echo "Selected platform flags: $PLATFORM_ARGS"
-          python3 scripts/build_ipa_from_nsp.py game_input $PLATFORM_ARGS -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           echo "Compilation finished successfully!"
 
-      - name: Assemble Standalone Mac App Bundle
+      - name: Package macOS App Bundle
         if: ${{ github.event.inputs.build_target == 'macos' }}
         run: |
-          echo "Executing manual application packaging as outlined in Step 8 of the developer guide..."
+          echo "Verifying the app the build packed..."
           GAME_NAME="${{ github.event.inputs.artifact_name }}"
-          
-          B_DIR=$(ls -d game_input/*_build | head -n 1)
-          TID=$(basename "$B_DIR" _build)
-          P_DIR=$(ls -d "$B_DIR"/patched_v*/ | sort -V | tail -n 1)
-          P_DIR="${P_DIR%/}"
-          V_NUM="${P_DIR##*patched_}"
-          
           APP_DIR="game_input/$GAME_NAME.app"
-          R_DIR="$APP_DIR/Contents/Resources"
-          
-          mkdir -p "$R_DIR/patched" "$R_DIR/romfs" "$R_DIR/msl" "$R_DIR/font" "$R_DIR/profile" "$R_DIR/aoc" "$APP_DIR/Contents/MacOS"
-          
-          cp -c "$B_DIR/tools/dmhost" "$R_DIR/" || cp "$B_DIR/tools/dmhost" "$R_DIR/"
-          cp -cR "$P_DIR/" "$R_DIR/patched/" || cp -R "$P_DIR/" "$R_DIR/patched/"
-          cp -cR "$B_DIR/extract/$V_NUM/RomFS/" "$R_DIR/romfs/" || cp -R "$B_DIR/extract/$V_NUM/RomFS/" "$R_DIR/romfs/"
-          cp -cR "$B_DIR/shader/cache/" "$R_DIR/msl/" || cp -R "$B_DIR/shader/cache/" "$R_DIR/msl/"
-          cp -cR "$B_DIR/font/" "$R_DIR/font/" || cp -R "$B_DIR/font/" "$R_DIR/font/"
-          cp -cR dm/games/$TID/ "$R_DIR/profile/" || true
-          [ -d "$B_DIR/aoc" ] && (cp -cR "$B_DIR/aoc/" "$R_DIR/aoc/" || cp -R "$B_DIR/aoc/" "$R_DIR/aoc/")
-          
-          printf '%s\n' '#!/bin/bash' \
-          'R="$(cd "$(dirname "$0")/../Resources" && pwd)"' \
-          'N="$(basename "$(dirname "$(dirname "$R")")" .app)"' \
-          'D="$HOME/Library/Application Support/$N"' \
-          'mkdir -p "$D/save" "$D/temp"; cd "$D"' \
-          'export DM_ROOT="$D" DM_SAVE="$D/save" DM_TEMP="$D/temp" DM_ROMFS="$R/romfs" DM_MSL_DIR="$R/msl" DM_FONT_DIR="$R/font" DM_LANG=en-US DM_WINDOW=1 DM_AUDIO=1' \
-          '[ -f "$R/profile/shader_map.tsv" ] && export DM_NVN_SHMAP="$R/profile/shader_map.tsv"' \
-          '[ -d "$R/aoc" ] && export DM_AOC_DIR="$R/aoc"' \
-          'exec "$R/dmhost" "$R/patched" > "$D/log.txt" 2>&1' > "$APP_DIR/Contents/MacOS/launch"
-          
-          chmod +x "$APP_DIR/Contents/MacOS/launch"
-          
-          plutil -create xml1 "$APP_DIR/Contents/Info.plist"
-          for kv in "CFBundleExecutable launch" "CFBundleName $GAME_NAME" "CFBundleIdentifier org.nxnative.mac.$TID" "CFBundlePackageType APPL" "CFBundleIconFile AppIcon"; do 
-            plutil -insert "${kv%% *}" -string "${kv#* }" "$APP_DIR/Contents/Info.plist"
-          done
 
-          IMG_SRC=$(find "$B_DIR"/extract -type f -name "icon.jpg" -print -quit)
-          if [ -n "$IMG_SRC" ] && [ -f "$IMG_SRC" ]; then
-            sips -s format icns "$IMG_SRC" --out "$R_DIR/AppIcon.icns" >/dev/null || true
-          fi
+          test -x "$APP_DIR/Contents/MacOS/dmhost" || { echo "Error: dmhost missing from $APP_DIR"; exit 1; }
+          test -x "$APP_DIR/Contents/MacOS/nxnative" || { echo "Error: launcher missing from $APP_DIR"; exit 1; }
+          du -sh "$APP_DIR"
 
+          echo "Creating the disk image..."
           hdiutil create \
             -volname "$GAME_NAME" \
             -srcfolder "$APP_DIR" \

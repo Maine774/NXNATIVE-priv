@@ -182,7 +182,13 @@ jobs:
           
           echo "Starting compilation framework loop..."
           export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-          python3 scripts/build_ipa_from_nsp.py game_input --prepare-xcode -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+          if [ "$TARGET" = "macos" ]; then
+            PLATFORM_ARGS="--platform mac"
+          else
+            PLATFORM_ARGS="--prepare-xcode"
+          fi
+          echo "Selected platform flags: $PLATFORM_ARGS"
+          python3 scripts/build_ipa_from_nsp.py game_input $PLATFORM_ARGS -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
           echo "Compilation finished successfully!"
 
       - name: Assemble Standalone Mac App Bundle
@@ -200,7 +206,7 @@ jobs:
           APP_DIR="game_input/$GAME_NAME.app"
           R_DIR="$APP_DIR/Contents/Resources"
           
-          mkdir -p "$R_DIR/patched" "$R_DIR/romfs" "$R_DIR/msl" "$R_DIR/font" "$R_DIR/profile" "$APP_DIR/Contents/MacOS"
+          mkdir -p "$R_DIR/patched" "$R_DIR/romfs" "$R_DIR/msl" "$R_DIR/font" "$R_DIR/profile" "$R_DIR/aoc" "$APP_DIR/Contents/MacOS"
           
           cp -c "$B_DIR/tools/dmhost" "$R_DIR/" || cp "$B_DIR/tools/dmhost" "$R_DIR/"
           cp -cR "$P_DIR/" "$R_DIR/patched/" || cp -R "$P_DIR/" "$R_DIR/patched/"

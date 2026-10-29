@@ -15,6 +15,16 @@ on:
         description: 'Paste your URL link OR Google Drive File ID'
         required: true
         type: string
+      update_source:
+        description: 'Optional: Paste an update file URL or Google Drive File ID (leave empty to build the base game only)'
+        required: false
+        default: ''
+        type: string
+      dlc_source:
+        description: 'Optional: Paste a DLC file URL or Google Drive File ID (leave empty if no DLC)'
+        required: false
+        default: ''
+        type: string
       artifact_name:
         description: 'Name of the output app (e.g., Mario-Wonder)'
         required: true
@@ -36,6 +46,9 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          repository: seedds/nxnative
+          ref: main
 
       - name: Install macOS Dependencies
         run: |
@@ -70,6 +83,10 @@ jobs:
           sed -i '' 's/\r$//' keys_input/prod.keys
 
       - name: Fetch and Process Game Data
+        env:
+          UPDATE_SOURCE: ${{ github.event.inputs.update_source }}
+          DLC_SOURCE: ${{ github.event.inputs.dlc_source }}
+          DRIVE_API_KEY: ${{ secrets.DRIVE_API_KEY }}
         run: |
           cat << 'EOF' > process_game.py
           import sys, os, urllib.request, urllib.parse, json, base64, subprocess
@@ -138,12 +155,130 @@ jobs:
               subprocess.run(["7z", "x", "game_input/archive_temp.tmp", "-ogame_input/", "-y"], check=True)
               if os.path.exists("game_input/archive_temp.tmp"):
                   os.remove("game_input/archive_temp.tmp")
+          update_raw = os.environ.get("UPDATE_SOURCE", "").strip()
+          if update_raw:
+              update_url = update_raw
+              if " " in update_raw and method == "ddl":
+                  url_parts = update_raw.split('?', 1)
+                  if len(url_parts) == 2:
+                      base_part, query_part = url_parts[0], url_parts[1]
+                      parsed_queries = urllib.parse.parse_qsl(query_part, keep_blank_values=True)
+                      cleaned_query = urllib.parse.urlencode(parsed_queries)
+                      update_url = f"{base_part}?{cleaned_query}"
+                  else:
+                      update_url = update_raw.replace(" ", "%20")
+              if method == "gdrive":
+                  akey = os.environ.get("DRIVE_API_KEY", "")
+                  domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
+                  update_url = f"{domain}{update_raw}?alt=media&key={akey}"
+              update_output = "game_input/update_temp.tmp"
+              try:
+                  req = urllib.request.Request(update_url, headers={'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req) as response, open(update_output, 'wb') as out_file:
+                      block_size = 1024 * 1024
+                      while True:
+                          buffer = response.read(block_size)
+                          if not buffer:
+                              break
+                          out_file.write(buffer)
+                  print("Update download task complete!")
+              except Exception as e:
+                  print(f"Update network error: {e}")
+                  sys.exit(1)
+              update_clean = update_output.lower()
+              update_is_archive = any(x in update_clean for x in [".zip", ".rar", ".7z", "compressed", "7z"])
+              if update_is_archive:
+                  print("Unpacking update archive layer...")
+                  subprocess.run(["7z", "x", update_output, "-ogame_input/", "-y"], check=True)
+                  if os.path.exists(update_output):
+                      os.remove(update_output)
+              update_found = None
+              for root, dirs, files in os.walk("game_input"):
+                  for f in sorted(files):
+                      fp = os.path.join(root, f)
+                      if f == "game.nsp" or f == "game.xci" or f == "game.NSP" or f == "game.XCI":
+                          continue
+                      if f.startswith("game_update."):
+                          continue
+                      if f.lower().endswith((".nsp", ".xci")):
+                          update_found = fp
+                          break
+                  if update_found:
+                      break
+              if update_found:
+                  update_ext = "xci" if ".xci" in update_found.lower() else "nsp"
+                  os.rename(update_found, f"game_input/game_update.{update_ext}")
+                  print(f"Update staged as: game_input/game_update.{update_ext}")
+              elif os.path.exists(update_output):
+                  update_ext = "xci" if ".xci" in update_raw.lower() else "nsp"
+                  os.rename(update_output, f"game_input/game_update.{update_ext}")
+                  print(f"Update staged as: game_input/game_update.{update_ext}")
+          dlc_raw = os.environ.get("DLC_SOURCE", "").strip()
+          if dlc_raw:
+              dlc_url = dlc_raw
+              if " " in dlc_raw and method == "ddl":
+                  url_parts = dlc_raw.split('?', 1)
+                  if len(url_parts) == 2:
+                      base_part, query_part = url_parts[0], url_parts[1]
+                      parsed_queries = urllib.parse.parse_qsl(query_part, keep_blank_values=True)
+                      cleaned_query = urllib.parse.urlencode(parsed_queries)
+                      dlc_url = f"{base_part}?{cleaned_query}"
+                  else:
+                      dlc_url = dlc_raw.replace(" ", "%20")
+              if method == "gdrive":
+                  akey = os.environ.get("DRIVE_API_KEY", "")
+                  domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
+                  dlc_url = f"{domain}{dlc_raw}?alt=media&key={akey}"
+              dlc_output = "game_input/dlc_temp.tmp"
+              try:
+                  req = urllib.request.Request(dlc_url, headers={'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req) as response, open(dlc_output, 'wb') as out_file:
+                      block_size = 1024 * 1024
+                      while True:
+                          buffer = response.read(block_size)
+                          if not buffer:
+                              break
+                          out_file.write(buffer)
+                  print("DLC download task complete!")
+              except Exception as e:
+                  print(f"DLC network error: {e}")
+                  sys.exit(1)
+              dlc_clean = dlc_output.lower()
+              dlc_is_archive = any(x in dlc_clean for x in [".zip", ".rar", ".7z", "compressed", "7z"])
+              if dlc_is_archive:
+                  print("Unpacking DLC archive layer...")
+                  subprocess.run(["7z", "x", dlc_output, "-ogame_input/", "-y"], check=True)
+                  if os.path.exists(dlc_output):
+                      os.remove(dlc_output)
+              dlc_found = None
+              for root, dirs, files in os.walk("game_input"):
+                  for f in sorted(files):
+                      fp = os.path.join(root, f)
+                      if f == "game.nsp" or f == "game.xci" or f == "game.NSP" or f == "game.XCI":
+                          continue
+                      if f.startswith("game_update."):
+                          continue
+                      if f.startswith("game_dlc."):
+                          continue
+                      if f.lower().endswith((".nsp", ".xci")):
+                          dlc_found = fp
+                          break
+                  if dlc_found:
+                      break
+              if dlc_found:
+                  dlc_ext = "xci" if ".xci" in dlc_found.lower() else "nsp"
+                  os.rename(dlc_found, f"game_input/game_dlc.{dlc_ext}")
+                  print(f"DLC staged as: game_input/game_dlc.{dlc_ext}")
+              elif os.path.exists(dlc_output):
+                  dlc_ext = "xci" if ".xci" in dlc_raw.lower() else "nsp"
+                  os.rename(dlc_output, f"game_input/game_dlc.{dlc_ext}")
+                  print(f"DLC staged as: game_input/game_dlc.{dlc_ext}")
           EOF
           
           python3 process_game.py
           
           echo "Searching for game contents inside workspace folder..."
-          TARGET_FILE=$(find game_input -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.NSP" -o -name "*.XCI" \) -print -quit)
+          TARGET_FILE=$(find game_input -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.NSP" -o -name "*.XCI" \) -not -name "game_update.*" -print -quit)
           
           if [ -z "$TARGET_FILE" ]; then
             echo "Error: No valid .nsp or .xci payload found inside the download source."
@@ -155,6 +290,40 @@ jobs:
           
           mv "$TARGET_FILE" "game_input/game.${EXTENSION}"
           echo "Target game verified and configured as: game.${EXTENSION}"
+          
+          if [ -n "$UPDATE_SOURCE" ]; then
+            UPD_FILE=$(find game_input -maxdepth 1 -type f -name "game_update.*" -print -quit)
+            if [ -n "$UPD_FILE" ]; then
+              UPD_BASE="${UPD_FILE##*/}"
+              UPD_TITLE="${UPD_BASE%%\[*}"
+              UPD_TID="[${UPD_BASE#*\[}]"
+              UPD_TID="${UPD_TID:0:18}"
+              UPD_V="${UPD_BASE#*\[v"
+              UPD_V="${UPD_V%%]*}"
+              UPD_V="[v${UPD_V}]"
+              UPD_EXT="${UPD_BASE##*.}"
+              FINAL_UPD="game_input/${UPD_TITLE}${UPD_TID}${UPD_V}.${UPD_EXT}"
+              mv "$UPD_FILE" "$FINAL_UPD"
+              echo "Update final name: $FINAL_UPD"
+            fi
+          fi
+
+          if [ -n "$DLC_SOURCE" ]; then
+            DLC_FILE=$(find game_input -maxdepth 1 -type f -name "game_dlc.*" -print -quit)
+            if [ -n "$DLC_FILE" ]; then
+              DLC_BASE="${DLC_FILE##*/}"
+              DLC_TITLE="${DLC_BASE%%\[*}"
+              DLC_TID="[${DLC_BASE#*\[}]"
+              DLC_TID="${DLC_TID:0:18}"
+              DLC_V="${DLC_BASE#*\[v"
+              DLC_V="${DLC_V%%]*}"
+              DLC_V="[v${DLC_V}]"
+              DLC_EXT="${DLC_BASE##*.}"
+              FINAL_DLC="game_input/${DLC_TITLE}${DLC_TID}${DLC_V}.${DLC_EXT}"
+              mv "$DLC_FILE" "$FINAL_DLC"
+              echo "DLC final name: $FINAL_DLC"
+            fi
+          fi
 
       - name: Run Build Script
         env:

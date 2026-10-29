@@ -1,37 +1,53 @@
-name: Build Universal Switch App
+name: Build NXNATIVE IPA
 
 on:
   workflow_dispatch:
     inputs:
       method_selector:
-        description: 'Choose your download method'
+        description: 'Download method'
         required: true
         default: 'ddl'
         type: choice
         options:
           - ddl
           - gdrive
-      game_source_input:
-        description: 'Paste your URL link OR Google Drive File ID'
+      # Base URLs (NOT pre-signed) - these don't expire
+      game_source_base:
+        description: 'Base URL for game (no signature params)'
         required: true
         type: string
-      update_source:
-        description: 'Optional: Paste an update file URL or Google Drive File ID (leave empty to build the base game only)'
+      update_source_base:
+        description: 'Base URL for update (optional, no signature params)'
         required: false
-        default: ''
         type: string
-      dlc_source:
-        description: 'Optional: Paste a DLC file URL or Google Drive File ID (leave empty if no DLC)'
+      dlc_source_base:
+        description: 'Base URL for DLC (optional, no signature params)'
         required: false
-        default: ''
+        type: string
+      # R2/S3 credentials for signing at runtime
+      r2_account_id:
+        description: 'R2 Account ID'
+        required: true
+        type: string
+      r2_access_key_id:
+        description: 'R2 Access Key ID'
+        required: true
+        type: string
+      r2_secret_access_key:
+        description: 'R2 Secret Access Key'
+        required: true
+        type: string
+      r2_bucket:
+        description: 'R2 Bucket name'
+        required: true
         type: string
       artifact_name:
-        description: 'Name of the output app (e.g., Mario-Wonder)'
+        description: 'Artifact name'
         required: true
-        default: 'Switch-Game-App'
+        default: 'nxnative-build'
         type: string
       build_target:
-        description: 'Choose your target platform'
+        description: 'Build target'
         required: true
         default: 'ios'
         type: choice
@@ -39,372 +55,197 @@ on:
           - ios
           - macos
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build IPA / App
     runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      # Pass R2 creds to Python script for runtime signing
+      R2_ACCOUNT_ID: ${{ inputs.r2_account_id }}
+      R2_ACCESS_KEY_ID: ${{ inputs.r2_access_key_id }}
+      R2_SECRET_ACCESS_KEY: ${{ inputs.r2_secret_access_key }}
+      R2_BUCKET: ${{ inputs.r2_bucket }}
+      GAME_SOURCE_BASE: ${{ inputs.game_source_base }}
+      UPDATE_SOURCE_BASE: ${{ inputs.update_source_base }}
+      DLC_SOURCE_BASE: ${{ inputs.dlc_source_base }}
+      METHOD_SELECTOR: ${{ inputs.method_selector }}
+      BUILD_TARGET: ${{ inputs.build_target }}
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout NXNATIVE
         uses: actions/checkout@v4
         with:
           repository: seedds/nxnative
-          ref: main
+          persist-credentials: false
 
       - name: Install macOS Dependencies
         run: |
-          brew install xcodegen zstd spirv-cross glslang p7zip
-          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-          xcodebuild -downloadComponent MetalToolchain || true
+          brew install xcodegen zstd spirv-cross glslang p7zip awscli
+          brew install --cask dotnet-sdk
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Setup .NET Runtime
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+          cache: pip
 
       - name: Install Python Dependencies
         run: |
-          python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'" pycryptodome zstandard
-
-      - name: Setup Workspace Directories
-        run: |
-          mkdir -p game_input
-          mkdir -p keys_input
+          pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'"
 
       - name: Deploy Raw Keys
         run: |
-          cat << 'EOF' > keys_input/prod.keys
-          ${{ secrets.BASE64_KEYS }}
-          EOF
-          sed -i '' 's/\r$//' keys_input/prod.keys
+          mkdir -p keys_input
+          echo "${{ secrets.BASE64_KEYS }}" | base64 -d > keys_input/prod.keys
 
-      - name: Fetch and Process Game Data
-        env:
-          UPDATE_SOURCE: ${{ github.event.inputs.update_source }}
-          DLC_SOURCE: ${{ github.event.inputs.dlc_source }}
-          DRIVE_API_KEY: ${{ secrets.DRIVE_API_KEY }}
+      - name: Generate Fresh Signed URLs & Download Game Data
         run: |
-          cat << 'EOF' > process_game.py
-          import sys, os, urllib.request, urllib.parse, json, base64, subprocess
-          
-          method = """${{ github.event.inputs.method_selector }}""".strip()
-          raw_input = """${{ github.event.inputs.game_source_input }}""".strip()
-          
-          if " " in raw_input and method == "ddl":
-              url_parts = raw_input.split('?', 1)
-              if len(url_parts) == 2:
-                  base_part, query_part = url_parts[0], url_parts[1]
-                  parsed_queries = urllib.parse.parse_qsl(query_part, keep_blank_values=True)
-                  cleaned_query = urllib.parse.urlencode(parsed_queries)
-                  raw_url = f"{base_part}?{cleaned_query}"
-              else:
-                  raw_url = raw_input.replace(" ", "%20")
-          else:
-              raw_url = raw_input
-              
-          clean_url = raw_url.lower()
-          output_path = "game_input/archive_temp.tmp"
-          is_archive = False
-          
-          if method == "gdrive":
-              akey = """${{ secrets.DRIVE_API_KEY }}""".strip()
-              domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
-              
-              meta_url = f"{domain}{raw_url}?key={akey}"
-              try:
-                  req = urllib.request.Request(meta_url, headers={'User-Agent': 'Mozilla/5.0'})
-                  with urllib.request.urlopen(req) as response:
-                      metadata = json.loads(response.read().decode())
-                  filename = metadata.get('name', 'game.nsp').lower()
-              except Exception as e:
-                  print(f"Metadata check skipped: {e}")
-                  filename = "game.nsp"
-                  
-              is_archive = any(x in filename for x in [".zip", ".rar", ".7z", "compressed", "7z"])
-              raw_url = f"{domain}{raw_url}?alt=media&key={akey}"
-              if not is_archive:
-                  ext = "xci" if ".xci" in filename else "nsp"
-                  output_path = f"game_input/game.{ext}"
-          else:
-              is_archive = any(x in clean_url for x in [".zip", ".rar", ".7z", "compressed", "7z"])
-              if not is_archive:
-                  ext = "xci" if ".xci" in clean_url else "nsp"
-                  output_path = f"game_input/game.{ext}"
-                  
-          print("Downloading game payload directly to cloud runner...")
-          try:
-              req = urllib.request.Request(raw_url, headers={'User-Agent': 'Mozilla/5.0'})
-              with urllib.request.urlopen(req) as response, open(output_path, 'wb') as out_file:
-                  block_size = 1024 * 1024
-                  while True:
-                      buffer = response.read(block_size)
-                      if not buffer:
-                          break
-                      out_file.write(buffer)
-              print("Download task complete!")
-          except Exception as e:
-              print(f"Network error: {e}")
-              sys.exit(1)
-              
-          if is_archive:
-              print("Unpacking compressed archive layer...")
-              subprocess.run(["7z", "x", "game_input/archive_temp.tmp", "-ogame_input/", "-y"], check=True)
-              if os.path.exists("game_input/archive_temp.tmp"):
-                  os.remove("game_input/archive_temp.tmp")
-          update_raw = os.environ.get("UPDATE_SOURCE", "").strip()
-          if update_raw:
-              update_url = update_raw
-              if " " in update_raw and method == "ddl":
-                  url_parts = update_raw.split('?', 1)
-                  if len(url_parts) == 2:
-                      base_part, query_part = url_parts[0], url_parts[1]
-                      parsed_queries = urllib.parse.parse_qsl(query_part, keep_blank_values=True)
-                      cleaned_query = urllib.parse.urlencode(parsed_queries)
-                      update_url = f"{base_part}?{cleaned_query}"
-                  else:
-                      update_url = update_raw.replace(" ", "%20")
-              if method == "gdrive":
-                  akey = os.environ.get("DRIVE_API_KEY", "")
-                  domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
-                  update_url = f"{domain}{update_raw}?alt=media&key={akey}"
-              update_output = "game_input/update_temp.tmp"
-              try:
-                  req = urllib.request.Request(update_url, headers={'User-Agent': 'Mozilla/5.0'})
-                  with urllib.request.urlopen(req) as response, open(update_output, 'wb') as out_file:
-                      block_size = 1024 * 1024
-                      while True:
-                          buffer = response.read(block_size)
-                          if not buffer:
-                              break
-                          out_file.write(buffer)
-                  print("Update download task complete!")
-              except Exception as e:
-                  print(f"Update network error: {e}")
-                  sys.exit(1)
-              update_clean = update_output.lower()
-              update_is_archive = any(x in update_clean for x in [".zip", ".rar", ".7z", "compressed", "7z"])
-              if update_is_archive:
-                  print("Unpacking update archive layer...")
-                  subprocess.run(["7z", "x", update_output, "-ogame_input/", "-y"], check=True)
-                  if os.path.exists(update_output):
-                      os.remove(update_output)
-              update_found = None
-              for root, dirs, files in os.walk("game_input"):
-                  for f in sorted(files):
-                      fp = os.path.join(root, f)
-                      if f == "game.nsp" or f == "game.xci" or f == "game.NSP" or f == "game.XCI":
-                          continue
-                      if f.startswith("game_update."):
-                          continue
-                      if f.lower().endswith((".nsp", ".xci")):
-                          update_found = fp
-                          break
-                  if update_found:
-                      break
-              if update_found:
-                  update_ext = "xci" if ".xci" in update_found.lower() else "nsp"
-                  os.rename(update_found, f"game_input/game_update.{update_ext}")
-                  print(f"Update staged as: game_input/game_update.{update_ext}")
-              elif os.path.exists(update_output):
-                  update_ext = "xci" if ".xci" in update_raw.lower() else "nsp"
-                  os.rename(update_output, f"game_input/game_update.{update_ext}")
-                  print(f"Update staged as: game_input/game_update.{update_ext}")
-          dlc_raw = os.environ.get("DLC_SOURCE", "").strip()
-          if dlc_raw:
-              dlc_url = dlc_raw
-              if " " in dlc_raw and method == "ddl":
-                  url_parts = dlc_raw.split('?', 1)
-                  if len(url_parts) == 2:
-                      base_part, query_part = url_parts[0], url_parts[1]
-                      parsed_queries = urllib.parse.parse_qsl(query_part, keep_blank_values=True)
-                      cleaned_query = urllib.parse.urlencode(parsed_queries)
-                      dlc_url = f"{base_part}?{cleaned_query}"
-                  else:
-                      dlc_url = dlc_raw.replace(" ", "%20")
-              if method == "gdrive":
-                  akey = os.environ.get("DRIVE_API_KEY", "")
-                  domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
-                  dlc_url = f"{domain}{dlc_raw}?alt=media&key={akey}"
-              dlc_output = "game_input/dlc_temp.tmp"
-              try:
-                  req = urllib.request.Request(dlc_url, headers={'User-Agent': 'Mozilla/5.0'})
-                  with urllib.request.urlopen(req) as response, open(dlc_output, 'wb') as out_file:
-                      block_size = 1024 * 1024
-                      while True:
-                          buffer = response.read(block_size)
-                          if not buffer:
-                              break
-                          out_file.write(buffer)
-                  print("DLC download task complete!")
-              except Exception as e:
-                  print(f"DLC network error: {e}")
-                  sys.exit(1)
-              dlc_clean = dlc_output.lower()
-              dlc_is_archive = any(x in dlc_clean for x in [".zip", ".rar", ".7z", "compressed", "7z"])
-              if dlc_is_archive:
-                  print("Unpacking DLC archive layer...")
-                  subprocess.run(["7z", "x", dlc_output, "-ogame_input/", "-y"], check=True)
-                  if os.path.exists(dlc_output):
-                      os.remove(dlc_output)
-              dlc_found = None
-              for root, dirs, files in os.walk("game_input"):
-                  for f in sorted(files):
-                      fp = os.path.join(root, f)
-                      if f == "game.nsp" or f == "game.xci" or f == "game.NSP" or f == "game.XCI":
-                          continue
-                      if f.startswith("game_update."):
-                          continue
-                      if f.startswith("game_dlc."):
-                          continue
-                      if f.lower().endswith((".nsp", ".xci")):
-                          dlc_found = fp
-                          break
-                  if dlc_found:
-                      break
-              if dlc_found:
-                  dlc_ext = "xci" if ".xci" in dlc_found.lower() else "nsp"
-                  os.rename(dlc_found, f"game_input/game_dlc.{dlc_ext}")
-                  print(f"DLC staged as: game_input/game_dlc.{dlc_ext}")
-              elif os.path.exists(dlc_output):
-                  dlc_ext = "xci" if ".xci" in dlc_raw.lower() else "nsp"
-                  os.rename(dlc_output, f"game_input/game_dlc.{dlc_ext}")
-                  print(f"DLC staged as: game_input/game_dlc.{dlc_ext}")
-          EOF
-          
-          python3 process_game.py
-          
-          echo "Searching for game contents inside workspace folder..."
-          TARGET_FILE=$(find game_input -type f \( -name "*.nsp" -o -name "*.xci" -o -name "*.NSP" -o -name "*.XCI" \) -not -name "game_update.*" -print -quit)
-          
-          if [ -z "$TARGET_FILE" ]; then
-            echo "Error: No valid .nsp or .xci payload found inside the download source."
-            exit 1
-          fi
-          
-          RAW_EXT="${TARGET_FILE##*.}"
-          EXTENSION=$(echo "$RAW_EXT" | tr '[:upper:]' '[:lower:]')
-          
-          mv "$TARGET_FILE" "game_input/game.${EXTENSION}"
-          echo "Target game verified and configured as: game.${EXTENSION}"
-          
-          if [ -n "$UPDATE_SOURCE" ]; then
-            UPD_FILE=$(find game_input -maxdepth 1 -type f -name "game_update.*" -print -quit)
-            if [ -n "$UPD_FILE" ]; then
-              UPD_BASE="${UPD_FILE##*/}"
-              UPD_TITLE="${UPD_BASE%%\[*}"
-              UPD_TID="[${UPD_BASE#*\[}]"
-              UPD_TID="${UPD_TID:0:18}"
-              UPD_V="${UPD_BASE#*\[v"
-              UPD_V="${UPD_V%%]*}"
-              UPD_V="[v${UPD_V}]"
-              UPD_EXT="${UPD_BASE##*.}"
-              FINAL_UPD="game_input/${UPD_TITLE}${UPD_TID}${UPD_V}.${UPD_EXT}"
-              mv "$UPD_FILE" "$FINAL_UPD"
-              echo "Update final name: $FINAL_UPD"
-            fi
-          fi
+          python3 << 'PYEOF'
+          import os, sys, subprocess, urllib.parse, boto3, botocore
+          from botocore.config import Config
 
-          if [ -n "$DLC_SOURCE" ]; then
-            DLC_FILE=$(find game_input -maxdepth 1 -type f -name "game_dlc.*" -print -quit)
-            if [ -n "$DLC_FILE" ]; then
-              DLC_BASE="${DLC_FILE##*/}"
-              DLC_TITLE="${DLC_BASE%%\[*}"
-              DLC_TID="[${DLC_BASE#*\[}]"
-              DLC_TID="${DLC_TID:0:18}"
-              DLC_V="${DLC_BASE#*\[v"
-              DLC_V="${DLC_V%%]*}"
-              DLC_V="[v${DLC_V}]"
-              DLC_EXT="${DLC_BASE##*.}"
-              FINAL_DLC="game_input/${DLC_TITLE}${DLC_TID}${DLC_V}.${DLC_EXT}"
-              mv "$DLC_FILE" "$FINAL_DLC"
-              echo "DLC final name: $FINAL_DLC"
-            fi
-          fi
+          # R2 endpoint
+          endpoint = f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
+
+          s3 = boto3.client(
+              's3',
+              endpoint_url=endpoint,
+              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+              config=Config(signature_version='s3v4'),
+              region_name='auto'
+          )
+
+          bucket = os.environ['R2_BUCKET']
+          method = os.environ['METHOD_SELECTOR']
+
+          def parse_object_key(base_url):
+              """Extract object key from base URL (strip query params)"""
+              parsed = urllib.parse.urlparse(base_url)
+              return parsed.path.lstrip('/')
+
+          def generate_presigned_url(object_key, expires=7200):
+              """Generate fresh signed URL valid for 2 hours"""
+              return s3.generate_presigned_url(
+                  'get_object',
+                  Params={'Bucket': bucket, 'Key': object_key},
+                  ExpiresIn=expires
+              )
+
+          def download_and_extract(url, output_path, is_archive=False):
+              """Download with fresh URL, extract if archive"""
+              print(f"Downloading: {output_path}")
+              req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+              with urllib.request.urlopen(req) as resp, open(output_path, 'wb') as f:
+                  while chunk := resp.read(1024*1024):
+                      f.write(chunk)
+              if is_archive:
+                  subprocess.run(['7z', 'x', output_path, '-ogame_input/', '-y'], check=True)
+                  os.remove(output_path)
+
+          os.makedirs('game_input', exist_ok=True)
+
+          # --- GAME ---
+          game_key = parse_object_key(os.environ['GAME_SOURCE_BASE'])
+          game_url = generate_presigned_url(game_key)
+          is_archive = any(x in game_key.lower() for x in ['.zip', '.rar', '.7z', 'compressed'])
+          download_and_extract(game_url, 'game_input/game.tmp', is_archive)
+
+          # Find the actual game file
+          game_file = None
+          for root, _, files in os.walk('game_input'):
+              for f in files:
+                  if f.lower().endswith(('.nsp', '.xci')) and not f.startswith('game_update.') and not f.startswith('game_dlc.'):
+                      game_file = os.path.join(root, f)
+                      break
+              if game_file: break
+
+          if not game_file:
+              sys.exit("No game .nsp/.xci found")
+
+          ext = 'xci' if '.xci' in game_file.lower() else 'nsp'
+          os.rename(game_file, f'game_input/game.{ext}')
+          print(f"Game staged: game_input/game.{ext}")
+
+          # --- UPDATE ---
+          if os.environ.get('UPDATE_SOURCE_BASE'):
+              upd_key = parse_object_key(os.environ['UPDATE_SOURCE_BASE'])
+              upd_url = generate_presigned_url(upd_key)
+              is_archive = any(x in upd_key.lower() for x in ['.zip', '.rar', '.7z', 'compressed'])
+              download_and_extract(upd_url, 'game_input/update.tmp', is_archive)
+
+              upd_file = None
+              for root, _, files in os.walk('game_input'):
+                  for f in files:
+                      if f.lower().endswith(('.nsp', '.xci')) and not f.startswith('game.') and not f.startswith('game_dlc.'):
+                          upd_file = os.path.join(root, f)
+                          break
+                  if upd_file: break
+
+              if upd_file:
+                  ext = 'xci' if '.xci' in upd_file.lower() else 'nsp'
+                  os.rename(upd_file, f'game_input/game_update.{ext}')
+                  print(f"Update staged: game_input/game_update.{ext}")
+
+          # --- DLC ---
+          if os.environ.get('DLC_SOURCE_BASE'):
+              dlc_key = parse_object_key(os.environ['DLC_SOURCE_BASE'])
+              dlc_url = generate_presigned_url(dlc_key)
+              is_archive = any(x in dlc_key.lower() for x in ['.zip', '.rar', '.7z', 'compressed'])
+              download_and_extract(dlc_url, 'game_input/dlc.tmp', is_archive)
+
+              dlc_file = None
+              for root, _, files in os.walk('game_input'):
+                  for f in files:
+                      if f.lower().endswith(('.nsp', '.xci')) and not f.startswith('game.') and not f.startswith('game_update.'):
+                          dlc_file = os.path.join(root, f)
+                          break
+                  if dlc_file: break
+
+              if dlc_file:
+                  ext = 'xci' if '.xci' in dlc_file.lower() else 'nsp'
+                  os.rename(dlc_file, f'game_input/game_dlc.{ext}')
+                  print(f"DLC staged: game_input/game_dlc.{ext}")
+
+          PYEOF
 
       - name: Run Build Script
-        env:
-          TARGET: ${{ github.event.inputs.build_target }}
-          CODE_SIGNING_ALLOWED: "NO"
-          CODE_SIGN_IDENTITY: ""
-          PROVISIONING_PROFILE_SPECIFIER: ""
         run: |
-          echo "Bypassing the broken prebuild execution wrapper completely..."
-          python3 -c '
-          import os
-          for r, d, fs in os.walk("."):
-              for f in fs:
-                  if f.endswith(".py"):
-                      fp = os.path.join(r, f)
-                      try:
-                          with open(fp, "r", errors="ignore") as file: src = file.read()
-                          if "run_pipeline_prebuild" in src or "pso_prebuild" in src:
-                              src = src.replace("self.run_pipeline_prebuild()", "pass")
-                              src = src.replace("run_pipeline_prebuild()", "pass")
-                              src = src.replace("pso_prebuild", "pso_skip")
-                              with open(fp, "w") as file: file.write(src)
-                      except Exception: pass
-          '
-          
-          echo "Starting compilation framework loop..."
-          export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-          if [ "$TARGET" = "macos" ]; then
-            echo "Target: macOS app (--platform mac-app, no offline pipeline archive: --gpu none)"
-            python3 scripts/build_ipa_from_nsp.py game_input --platform mac-app --gpu none \
-              -o "game_input/${{ github.event.inputs.artifact_name }}.app" \
-              -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+          # Patch out pre-build step that tries to download again
+          sed -i.bak '/download_game/d' scripts/build_ipa_from_nsp.py
+          sed -i.bak '/fetch_game/d' scripts/build_ipa_from_nsp.py
+
+          if [ "$BUILD_TARGET" = "ios" ]; then
+            python3 scripts/build_ipa_from_nsp.py game_input/game.nsp -k keys_input/prod.keys --platform ios
           else
-            echo "Target: iOS IPA (--platform ios)"
-            python3 scripts/build_ipa_from_nsp.py game_input --platform ios \
-              -k keys_input/prod.keys > build_output.log 2>&1 || (tail -n 100 build_output.log && exit 1)
+            python3 scripts/build_ipa_from_nsp.py game_input/game.nsp -k keys_input/prod.keys --platform mac-app --gpu none
           fi
-          echo "Compilation finished successfully!"
 
       - name: Package macOS App Bundle
-        if: ${{ github.event.inputs.build_target == 'macos' }}
+        if: inputs.build_target == 'macos'
         run: |
-          echo "Verifying the app the build packed..."
-          GAME_NAME="${{ github.event.inputs.artifact_name }}"
-          APP_DIR="game_input/$GAME_NAME.app"
-
-          test -x "$APP_DIR/Contents/MacOS/dmhost" || { echo "Error: dmhost missing from $APP_DIR"; exit 1; }
-          test -x "$APP_DIR/Contents/MacOS/nxnative" || { echo "Error: launcher missing from $APP_DIR"; exit 1; }
-          du -sh "$APP_DIR"
-
-          echo "Creating the disk image..."
-          hdiutil create \
-            -volname "$GAME_NAME" \
-            -srcfolder "$APP_DIR" \
-            -ov \
-            -format UDZO \
-            "game_input/$GAME_NAME.dmg"
-
-          echo "Mac Desktop Bundle Created Successfully!"
-
-      - name: Package iOS App Bundle
-        if: ${{ github.event.inputs.build_target == 'ios' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Packaging mobile package payload variables..."
-
-          IPA_FILE=$(find game_input -type f -name "*.ipa" -print -quit)
-
-          if [ -z "$IPA_FILE" ]; then
-            echo "Error: No IPA file found."
-            exit 1
+          APP_PATH=$(find . -name "*.app" -maxdepth 3 | head -1)
+          if [ -n "$APP_PATH" ]; then
+            hdiutil create -volname "${{ inputs.artifact_name }}" -srcfolder "$APP_PATH" -ov -format UDZO "${{ inputs.artifact_name }}.dmg"
           fi
 
-          mv "$IPA_FILE" "game_input/${{ github.event.inputs.artifact_name }}.ipa"
+      - name: Package iOS App Bundle
+        if: inputs.build_target == 'ios'
+        run: |
+          IPA_PATH=$(find . -name "*.ipa" -maxdepth 3 | head -1)
+          if [ -n "$IPA_PATH" ]; then
+            mv "$IPA_PATH" "${{ inputs.artifact_name }}.ipa"
+          fi
 
       - name: Upload Finished Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.artifact_name }}
+          name: ${{ inputs.artifact_name }}
           path: |
-            game_input/*.ipa
-            game_input/*.dmg
-          if-no-files-found: error
+            *.ipa
+            *.dmg
+          retention-days: 7

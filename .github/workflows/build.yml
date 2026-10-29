@@ -1,4 +1,4 @@
-name: Build NXNATIVE IPA
+name: Build NXNATIVE IPA/APP
 
 on:
   workflow_dispatch:

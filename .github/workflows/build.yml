@@ -92,11 +92,13 @@ jobs:
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # Use explicit toolcache Python path (setup-python sets pythonLocation)
+          # Use explicit toolcache Python and pip paths
           PYTHON="${{ runner.tool_cache }}/Python/3.12.10/arm64/bin/python3"
+          PIP="${{ runner.tool_cache }}/Python/3.12.10/arm64/bin/pip3"
           echo "Using Python: $PYTHON"
-          "$PYTHON" -m pip install --upgrade pip setuptools wheel
-          "$PYTHON" -m pip install \
+          echo "Using Pip: $PIP"
+          "$PIP" install --upgrade pip setuptools wheel
+          "$PIP" install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \

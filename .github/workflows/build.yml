@@ -67,7 +67,6 @@ jobs:
       - name: Checkout nxnative
         uses: actions/checkout@v4
         with:
-          repository: seedds/nxnative
           persist-credentials: false
 
       - name: Install macOS Dependencies
@@ -82,7 +81,7 @@ jobs:
           xcodegen --version
           zstd --version
           glslangValidator --version
-          7z --version
+          7z | head -1
           dotnet --version
 
       - name: Setup Python

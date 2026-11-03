@@ -84,9 +84,14 @@ jobs:
             fonttools
             nsz
             zbic
-            "backports.zstd; python_version < '3.14'"
             boto3
             botocore
+
+      - name: Install Conditional Dependencies
+        run: |
+          set -euo pipefail
+          # Install backports.zstd for Python < 3.14 (we're on 3.12)
+          micromamba run -n nxnative pip install "backports.zstd; python_version < '3.14'"
 
       - name: Install macOS Dependencies
         run: |

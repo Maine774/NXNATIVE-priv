@@ -1,4 +1,4 @@
-name: Build Switch IPA
+name: Build Universal Switch App
 
 on:
   workflow_dispatch:
@@ -9,14 +9,27 @@ on:
         default: 'ddl'
         type: choice
         options:
-          - ddl       # Direct HTTP/HTTPS URL
+          - ddl       # Direct HTTP/HTTPS URL (pre-signed or public)
+          - r2        # Cloudflare R2 (generates fresh signed URL at runtime)
           - gdrive    # Google Drive file ID
       source:
-        description: 'Game URL (ddl) or File ID (gdrive)'
+        description: 'Game URL (ddl/r2) or File ID (gdrive)'
         required: true
         type: string
+      update_source:
+        description: 'Update URL/ID (optional)'
+        required: false
+        default: ''
+        type: string
+      dlc_source:
+        description: 'DLC URL/ID (optional)'
+        required: false
+        default: ''
+        type: string
+      # R2 credentials (from repo secrets, only needed if method=r2)
+      # Configure in Settings → Secrets → Actions: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
       artifact_name:
-        description: 'Output IPA name'
+        description: 'Output app name (e.g., Zelda-TOTK)'
         required: true
         default: 'Switch-Game'
         type: string
@@ -40,6 +53,13 @@ jobs:
     env:
       METHOD: ${{ inputs.method }}
       SOURCE: ${{ inputs.source }}
+      UPDATE_SOURCE: ${{ inputs.update_source }}
+      DLC_SOURCE: ${{ inputs.dlc_source }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      DRIVE_API_KEY: ${{ secrets.DRIVE_API_KEY }}
       ARTIFACT_NAME: ${{ inputs.artifact_name }}
       PLATFORM: ${{ inputs.platform }}
 
@@ -65,21 +85,46 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; python_version < '3.14'"
+          python3 -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; python_version < '3.14'" boto3 botocore
 
-      - name: Prepare Keys
+      - name: Prepare Keys (matches old working workflow)
         run: |
           mkdir -p keys_input
-          echo "${{ secrets.BASE64_KEYS }}" | base64 -d > keys_input/prod.keys
+          cat << 'EOF' > keys_input/prod.keys
+          ${{ secrets.BASE64_KEYS }}
+          EOF
+          sed -i '' 's/\r$//' keys_input/prod.keys
+          # Auto-detect base64 vs raw
+          if [ "$(wc -l < keys_input/prod.keys)" -eq 1 ] && grep -qE '^[A-Za-z0-9+/=]+$' keys_input/prod.keys; then
+            base64 -d keys_input/prod.keys > keys_input/prod.keys.decoded 2>/dev/null && mv keys_input/prod.keys.decoded keys_input/prod.keys
+            echo "Decoded base64 keys"
+          else
+            echo "Using raw keys"
+          fi
 
-      - name: Download Game
+      - name: Download Game, Update, DLC
         run: |
           python3 << 'PYEOF'
-          import os, sys, subprocess, urllib.parse, urllib.request, json, base64
+          import os, sys, subprocess, urllib.parse, urllib.request, json, base64, boto3, botocore
+          from botocore.config import Config
 
           method = os.environ['METHOD']
           source = os.environ['SOURCE']
+          update_source = os.environ.get('UPDATE_SOURCE', '').strip()
+          dlc_source = os.environ.get('DLC_SOURCE', '').strip()
           os.makedirs('game_input', exist_ok=True)
+
+          # ===== Helpers =====
+          def clean_url(raw):
+              """Clean URL: fix spaces, preserve query params (from old workflow)"""
+              if " " in raw and method == "ddl":
+                  parts = raw.split('?', 1)
+                  if len(parts) == 2:
+                      base, query = parts
+                      parsed = urllib.parse.parse_qsl(query, keep_blank_values=True)
+                      return f"{base}?{urllib.parse.urlencode(parsed)}"
+                  return raw.replace(" ", "%20")
+              return raw
 
           def is_archive(url):
               return any(x in url.lower() for x in ['.zip', '.rar', '.7z', 'compressed'])
@@ -96,58 +141,111 @@ jobs:
               if not api_key:
                   sys.exit("DRIVE_API_KEY secret not set")
               domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
-              # Get filename from metadata
-              meta_url = f"{domain}{file_id}?key={api_key}"
-              filename = "game.nsp"
+              # Try get filename from metadata
               try:
+                  meta_url = f"{domain}{file_id}?key={api_key}"
                   req = urllib.request.Request(meta_url, headers={'User-Agent': 'Mozilla/5.0'})
                   with urllib.request.urlopen(req) as resp:
                       meta = json.loads(resp.read().decode())
                   filename = meta.get('name', 'game.nsp').lower()
-              except Exception as e:
-                  print(f"Metadata fetch failed: {e}")
-              # Download actual file
+              except:
+                  filename = "game.nsp"
               dl_url = f"{domain}{file_id}?alt=media&key={api_key}"
               download_direct(dl_url, out_path)
               return filename
 
-          archive = is_archive(source)
-          tmp = 'game_input/game.tmp' if archive else 'game_input/game.bin'
+          def get_r2_client():
+              account_id = os.environ.get('R2_ACCOUNT_ID')
+              access_key = os.environ.get('R2_ACCESS_KEY_ID')
+              secret_key = os.environ.get('R2_SECRET_ACCESS_KEY')
+              if not all([account_id, access_key, secret_key]):
+                  return None
+              endpoint = f"https://{account_id}.r2.cloudflarestorage.com"
+              return boto3.client(
+                  's3', endpoint_url=endpoint,
+                  aws_access_key_id=access_key, aws_secret_access_key=secret_key,
+                  config=Config(signature_version='s3v4'), region_name='auto'
+              )
 
-          if method == 'ddl':
-              download_direct(source, tmp)
-          elif method == 'gdrive':
-              filename = download_gdrive(source, tmp)
-              # If we got filename from metadata, we could use it, but we'll just detect from file
-          else:
-              sys.exit(f"Unknown method: {method}")
+          def parse_r2_key(base_url):
+              bucket = os.environ.get('R2_BUCKET', '')
+              parsed = urllib.parse.urlparse(base_url)
+              path = parsed.path.lstrip('/')
+              if bucket and path.startswith(bucket + '/'):
+                  path = path[len(bucket) + 1:]
+              return path
 
-          # Extract if archive
-          if archive:
-              print("Extracting archive...")
-              subprocess.run(['7z', 'x', tmp, '-ogame_input/', '-y'], check=True)
-              os.remove(tmp)
+          def download_r2(s3, object_key, out_path, archive=False):
+              bucket = os.environ['R2_BUCKET']
+              url = s3.generate_presigned_url('get_object', Params={'Bucket': bucket, 'Key': object_key}, ExpiresIn=7200)
+              print(f"Downloading (R2): {out_path}")
+              req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+              with urllib.request.urlopen(req) as resp, open(out_path, 'wb') as f:
+                  while chunk := resp.read(1024*1024):
+                      f.write(chunk)
+              if archive:
+                  subprocess.run(['7z', 'x', out_path, '-ogame_input/', '-y'], check=True)
+                  os.remove(out_path)
 
-          # Find .nsp or .xci
-          game_file = None
-          for root, _, files in os.walk('game_input'):
-              for f in files:
-                  if f.lower().endswith(('.nsp', '.xci')):
-                      game_file = os.path.join(root, f)
-                      break
-              if game_file:
-                  break
+          def find_game_file(exclude=()):
+              for root, _, files in os.walk('game_input'):
+                  for f in files:
+                      if f.lower().endswith(('.nsp', '.xci')) and not any(f.startswith(p) for p in exclude):
+                          return os.path.join(root, f)
+              return None
 
+          def download_file(kind, src, tmp_name, s3=None):
+              archive = is_archive(src)
+              tmp = f'game_input/{tmp_name}.tmp' if archive else f'game_input/{tmp_name}.bin'
+
+              if method == 'ddl':
+                  download_direct(clean_url(src), tmp)
+              elif method == 'r2':
+                  if not s3:
+                      sys.exit(f"R2 method requires R2 secrets for {kind}")
+                  download_r2(s3, parse_r2_key(src), tmp, archive)
+              elif method == 'gdrive':
+                  download_gdrive(src, tmp)
+              else:
+                  sys.exit(f"Unknown method: {method}")
+
+              if archive:
+                  print(f"Extracting {kind} archive...")
+                  subprocess.run(['7z', 'x', tmp, '-ogame_input/', '-y'], check=True)
+                  os.remove(tmp)
+
+          # ===== Main =====
+          s3 = get_r2_client() if method == 'r2' else None
+
+          # GAME (required)
+          download_file('game', source, 'game', s3)
+          game_file = find_game_file(exclude=('game_update.', 'game_dlc.'))
           if not game_file:
-              sys.exit("No .nsp/.xci found in download")
-
+              sys.exit("No .nsp/.xci found for game")
           ext = 'xci' if '.xci' in game_file.lower() else 'nsp'
-          final = f'game_input/game.{ext}'
-          os.rename(game_file, final)
-          print(f"Game ready: {final}")
-
+          os.rename(game_file, f'game_input/game.{ext}')
+          print(f"Game: game_input/game.{ext}")
           with open('game_input/.ext', 'w') as f:
               f.write(ext)
+
+          # UPDATE (optional)
+          if update_source:
+              download_file('update', update_source, 'update', s3)
+              upd = find_game_file(exclude=('game.', 'game_dlc.'))
+              if upd:
+                  uext = 'xci' if '.xci' in upd.lower() else 'nsp'
+                  os.rename(upd, f'game_input/game_update.{uext}')
+                  print(f"Update: game_input/game_update.{uext}")
+
+          # DLC (optional)
+          if dlc_source:
+              download_file('dlc', dlc_source, 'dlc', s3)
+              dlc = find_game_file(exclude=('game.', 'game_update.'))
+              if dlc:
+                  dext = 'xci' if '.xci' in dlc.lower() else 'nsp'
+                  os.rename(dlc, f'game_input/game_dlc.{dext}')
+                  print(f"DLC: game_input/game_dlc.{dext}")
+
           PYEOF
 
       - name: Build IPA / App
@@ -158,7 +256,7 @@ jobs:
 
           echo "Building ${PLATFORM} from ${GAME}"
 
-          # Disable prebuild download in build script (we already have the game)
+          # Disable prebuild download in build script (we already have files)
           if [ -f scripts/build_ipa_from_nsp.py ]; then
             sed -i.bak 's/^\(.*download_game.*\)$/# \1  # DISABLED/' scripts/build_ipa_from_nsp.py
             sed -i.bak 's/^\(.*fetch_game.*\)$/# \1  # DISABLED/' scripts/build_ipa_from_nsp.py
@@ -171,19 +269,20 @@ jobs:
             python3 scripts/build_ipa_from_nsp.py "${GAME}" -k keys_input/prod.keys --platform mac-app --gpu none
           fi
 
-      - name: Package Output
+      - name: Package Output (matches old workflow)
         run: |
           set -euo pipefail
+          NAME="${ARTIFACT_NAME}"
           if [ "${PLATFORM}" = "ios" ]; then
             IPA=$(find . -name "*.ipa" -maxdepth 3 | head -1)
             [ -n "$IPA" ] || { echo "No IPA found"; exit 1; }
-            mv "$IPA" "${ARTIFACT_NAME}.ipa"
-            echo "Created ${ARTIFACT_NAME}.ipa"
+            mv "$IPA" "${NAME}.ipa"
+            echo "Created ${NAME}.ipa"
           else
             APP=$(find . -name "*.app" -maxdepth 3 | head -1)
             [ -n "$APP" ] || { echo "No .app found"; exit 1; }
-            hdiutil create -volname "${ARTIFACT_NAME}" -srcfolder "$APP" -ov -format UDZO "${ARTIFACT_NAME}.dmg"
-            echo "Created ${ARTIFACT_NAME}.dmg"
+            hdiutil create -volname "$NAME" -srcfolder "$APP" -ov -format UDZO "${NAME}.dmg"
+            echo "Created ${NAME}.dmg"
           fi
 
       - name: Upload Artifact

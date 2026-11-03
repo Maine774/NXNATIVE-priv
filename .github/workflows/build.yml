@@ -1,4 +1,4 @@
-name: Build NXNATIVE IPA/APP
+name: Build NXNATIVE IPA
 
 on:
   workflow_dispatch:
@@ -11,8 +11,8 @@ on:
         type: choice
         options:
           - ddl       # Direct HTTP/HTTPS URL (no creds needed)
-          - r2        # Cloudflare R2 (needs R2 creds)
-          - gdrive    # Google Drive (needs API key)
+          - r2        # Cloudflare R2 (uses repo R2 secrets)
+          - gdrive    # Google Drive (uses repo DRIVE_API_KEY secret)
       update_method:
         description: 'Update download method (optional)'
         required: false
@@ -32,7 +32,7 @@ on:
           - r2
           - gdrive
 
-      # Source URLs (base URLs for R2, full URLs for ddl/gdrive)
+      # Source URLs (full URL for ddl/gdrive, base URL for r2)
       game_source:
         description: 'Game URL (ddl/gdrive) or base URL (r2)'
         required: true
@@ -46,64 +46,9 @@ on:
         required: false
         type: string
 
-      # R2 credentials (only needed if using 'r2' method for any file)
-      r2_account_id:
-        description: 'R2 Account ID (required if any file uses r2 method)'
-        required: false
-        type: string
-      r2_access_key_id:
-        description: 'R2 Access Key ID (required if any file uses r2 method)'
-        required: false
-        type: string
-      r2_secret_access_key:
-        description: 'R2 Secret Access Key (required if any file uses r2 method)'
-        required: false
-        type: string
-      r2_bucket:
-        description: 'R2 Bucket name (required if any file uses r2 method)'
-        required: false
-        type: string
-
-      # Optional: Different R2 creds per file (if in different buckets/accounts)
-      update_r2_account_id:
-        description: 'R2 Account ID for update (optional, defaults to game creds)'
-        required: false
-        type: string
-      update_r2_access_key_id:
-        description: 'R2 Access Key ID for update (optional, defaults to game creds)'
-        required: false
-        type: string
-      update_r2_secret_access_key:
-        description: 'R2 Secret Access Key for update (optional, defaults to game creds)'
-        required: false
-        type: string
-      update_r2_bucket:
-        description: 'R2 Bucket name for update (optional, defaults to game bucket)'
-        required: false
-        type: string
-      dlc_r2_account_id:
-        description: 'R2 Account ID for DLC (optional, defaults to game creds)'
-        required: false
-        type: string
-      dlc_r2_access_key_id:
-        description: 'R2 Access Key ID for DLC (optional, defaults to game creds)'
-        required: false
-        type: string
-      dlc_r2_secret_access_key:
-        description: 'R2 Secret Access Key for DLC (optional, defaults to game creds)'
-        required: false
-        type: string
-      dlc_r2_bucket:
-        description: 'R2 Bucket name for DLC (optional, defaults to game bucket)'
-        required: false
-        type: string
-
-      # Google Drive API key (only needed if using gdrive method)
-      drive_api_key:
-        description: 'Google Drive API Key (required if any file uses gdrive method)'
-        required: false
-        type: string
-
+      # R2 credentials (from repo secrets, only needed if any file uses r2)
+      # Configure in Settings → Secrets and variables → Actions:
+      # R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
       artifact_name:
         description: 'Artifact name (e.g., Zelda-TOTK)'
         required: true
@@ -133,19 +78,11 @@ jobs:
       GAME_SOURCE: ${{ inputs.game_source }}
       UPDATE_SOURCE: ${{ inputs.update_source }}
       DLC_SOURCE: ${{ inputs.dlc_source }}
-      R2_ACCOUNT_ID: ${{ inputs.r2_account_id }}
-      R2_ACCESS_KEY_ID: ${{ inputs.r2_access_key_id }}
-      R2_SECRET_ACCESS_KEY: ${{ inputs.r2_secret_access_key }}
-      R2_BUCKET: ${{ inputs.r2_bucket }}
-      UPDATE_R2_ACCOUNT_ID: ${{ inputs.update_r2_account_id }}
-      UPDATE_R2_ACCESS_KEY_ID: ${{ inputs.update_r2_access_key_id }}
-      UPDATE_R2_SECRET_ACCESS_KEY: ${{ inputs.update_r2_secret_access_key }}
-      UPDATE_R2_BUCKET: ${{ inputs.update_r2_bucket }}
-      DLC_R2_ACCOUNT_ID: ${{ inputs.dlc_r2_account_id }}
-      DLC_R2_ACCESS_KEY_ID: ${{ inputs.dlc_r2_access_key_id }}
-      DLC_R2_SECRET_ACCESS_KEY: ${{ inputs.dlc_r2_secret_access_key }}
-      DLC_R2_BUCKET: ${{ inputs.dlc_r2_bucket }}
-      DRIVE_API_KEY: ${{ inputs.drive_api_key }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      DRIVE_API_KEY: ${{ secrets.DRIVE_API_KEY }}
       BUILD_TARGET: ${{ inputs.build_target }}
       ARTIFACT_NAME: ${{ inputs.artifact_name }}
 
@@ -185,15 +122,12 @@ jobs:
           # ============================================================
           # Helpers
           # ============================================================
-          def get_r2_creds(prefix):
-              """Get R2 creds with fallback to game creds"""
-              account_id = os.environ.get(f'{prefix}_R2_ACCOUNT_ID') or os.environ.get('R2_ACCOUNT_ID')
-              access_key = os.environ.get(f'{prefix}_R2_ACCESS_KEY_ID') or os.environ.get('R2_ACCESS_KEY_ID')
-              secret_key = os.environ.get(f'{prefix}_R2_SECRET_ACCESS_KEY') or os.environ.get('R2_SECRET_ACCESS_KEY')
-              bucket = os.environ.get(f'{prefix}_R2_BUCKET') or os.environ.get('R2_BUCKET')
-              return account_id, access_key, secret_key, bucket
-
-          def create_s3_client(account_id, access_key, secret_key):
+          def create_s3_client():
+              account_id = os.environ.get('R2_ACCOUNT_ID')
+              access_key = os.environ.get('R2_ACCESS_KEY_ID')
+              secret_key = os.environ.get('R2_SECRET_ACCESS_KEY')
+              if not all([account_id, access_key, secret_key]):
+                  return None
               endpoint = f"https://{account_id}.r2.cloudflarestorage.com"
               return boto3.client(
                   's3',
@@ -204,7 +138,8 @@ jobs:
                   region_name='auto'
               )
 
-          def parse_object_key(base_url, bucket):
+          def parse_object_key(base_url):
+              bucket = os.environ.get('R2_BUCKET', '')
               parsed = urllib.parse.urlparse(base_url)
               path = parsed.path.lstrip('/')
               if bucket and path.startswith(bucket + '/'):
@@ -212,7 +147,6 @@ jobs:
               return path
 
           def download_direct(url, output_path, is_archive=False):
-              """Download from direct HTTP/HTTPS URL"""
               print(f"Downloading (direct): {output_path}")
               req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
               with urllib.request.urlopen(req) as resp, open(output_path, 'wb') as f:
@@ -222,9 +156,9 @@ jobs:
                   subprocess.run(['7z', 'x', output_path, '-ogame_input/', '-y'], check=True)
                   os.remove(output_path)
 
-          def download_r2(s3_client, bucket, object_key, output_path, is_archive=False):
-              """Generate fresh signed URL from R2 and download"""
-              url = s3_client.generate_presigned_url(
+          def download_r2(s3, object_key, output_path, is_archive=False):
+              bucket = os.environ['R2_BUCKET']
+              url = s3.generate_presigned_url(
                   'get_object',
                   Params={'Bucket': bucket, 'Key': object_key},
                   ExpiresIn=7200
@@ -239,10 +173,9 @@ jobs:
                   os.remove(output_path)
 
           def download_gdrive(file_id, output_path, is_archive=False):
-              """Download from Google Drive"""
               api_key = os.environ.get('DRIVE_API_KEY', '').strip()
               if not api_key:
-                  sys.exit("Google Drive method requires DRIVE_API_KEY")
+                  sys.exit("Google Drive method requires DRIVE_API_KEY secret")
               domain = "https://www.googleapis.com/drive/v3/files/"
               url = f"{domain}{file_id}?alt=media&key={api_key}"
               print(f"Downloading (Google Drive): {output_path}")
@@ -265,18 +198,14 @@ jobs:
                               return os.path.join(root, f)
               return None
 
-          def download_file(method, source, output_path, r2_prefix=''):
-              """Unified download dispatcher"""
+          def download_file(method, source, output_path, s3_client):
               if method == 'ddl':
                   download_direct(source, output_path, is_archive_url(source))
               elif method == 'r2':
-                  account_id, access_key, secret_key, bucket = get_r2_creds(r2_prefix)
-                  if not all([account_id, access_key, secret_key, bucket]):
-                      sys.exit(f"R2 method requires credentials for {r2_prefix or 'game'}. "
-                               f"Provide R2 account/key/secret/bucket.")
-                  s3 = create_s3_client(account_id, access_key, secret_key)
-                  object_key = parse_object_key(source, bucket)
-                  download_r2(s3, bucket, object_key, output_path, is_archive_url(object_key))
+                  if not s3_client:
+                      sys.exit("R2 method requires R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET secrets")
+                  object_key = parse_object_key(source)
+                  download_r2(s3_client, object_key, output_path, is_archive_url(object_key))
               elif method == 'gdrive':
                   download_gdrive(source, output_path, is_archive_url(source))
               else:
@@ -287,11 +216,18 @@ jobs:
           # ============================================================
           os.makedirs('game_input', exist_ok=True)
 
+          # Create R2 client once (lazy - only if needed)
+          s3_client = None
+          if any(m == 'r2' for m in [os.environ['GAME_METHOD'],
+                                      os.environ.get('UPDATE_METHOD', 'ddl'),
+                                      os.environ.get('DLC_METHOD', 'ddl')]):
+              s3_client = create_s3_client()
+
           game_method = os.environ['GAME_METHOD']
           game_source = os.environ['GAME_SOURCE']
 
           # --- GAME (required) ---
-          download_file(game_method, game_source, 'game_input/game.tmp', 'GAME')
+          download_file(game_method, game_source, 'game_input/game.tmp', s3_client)
 
           game_file = find_game_file(exclude_prefixes=('game_update.', 'game_dlc.'))
           if not game_file:
@@ -309,7 +245,7 @@ jobs:
           update_source = os.environ.get('UPDATE_SOURCE', '').strip()
           update_method = os.environ.get('UPDATE_METHOD', 'ddl')
           if update_source:
-              download_file(update_method, update_source, 'game_input/update.tmp', 'UPDATE')
+              download_file(update_method, update_source, 'game_input/update.tmp', s3_client)
               upd_file = find_game_file(exclude_prefixes=('game.', 'game_dlc.'))
               if upd_file:
                   ext = 'xci' if '.xci' in upd_file.lower() else 'nsp'
@@ -320,7 +256,7 @@ jobs:
           dlc_source = os.environ.get('DLC_SOURCE', '').strip()
           dlc_method = os.environ.get('DLC_METHOD', 'ddl')
           if dlc_source:
-              download_file(dlc_method, dlc_source, 'game_input/dlc.tmp', 'DLC')
+              download_file(dlc_method, dlc_source, 'game_input/dlc.tmp', s3_client)
               dlc_file = find_game_file(exclude_prefixes=('game.', 'game_update.'))
               if dlc_file:
                   ext = 'xci' if '.xci' in dlc_file.lower() else 'nsp'

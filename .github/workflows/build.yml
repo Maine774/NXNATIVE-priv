@@ -104,6 +104,12 @@ jobs:
           echo "Using Venv Python: $VENV_PYTHON"
           echo "Using Venv Pip: $VENV_PIP"
 
+          # Debug: check venv structure
+          ls -la /tmp/venv/
+          ls -la /tmp/venv/lib/
+          ls -la /tmp/venv/lib/python3.12/
+          ls -la /tmp/venv/lib/python3.12/site-packages/
+
           "$VENV_PIP" install --upgrade pip setuptools wheel
           "$VENV_PIP" install \
             lz4 \
@@ -114,8 +120,15 @@ jobs:
             "backports.zstd; python_version < '3.14'" \
             boto3 \
             botocore
+
+          # Debug: check installed packages
+          echo "=== Installed packages ==="
+          "$VENV_PIP" list
+          echo "=== site-packages after install ==="
+          ls -la /tmp/venv/lib/python3.12/site-packages/
+
           # Verify critical imports
-          "$VENV_PYTHON" -c "import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          "$VENV_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
           # Export venv Python for subsequent steps
           echo "VENV_PYTHON=$VENV_PYTHON" >> $GITHUB_ENV

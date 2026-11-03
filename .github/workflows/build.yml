@@ -92,10 +92,10 @@ jobs:
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # Use system Python (Homebrew on macOS-latest) to create a proper venv with --copies
-          # This avoids toolcache vs system Python conflicts and /tmp symlink issues
+          # Use setup-python's toolcache Python (via 'python' command, not 'python3')
+          # to create a proper venv with --copies. This avoids Framework Python conflicts.
           VENV_DIR="/Users/runner/venv"
-          python3 -m venv --copies "$VENV_DIR"
+          python -m venv --copies "$VENV_DIR"
           VENV_PYTHON="$VENV_DIR/bin/python"
           VENV_PIP="$VENV_DIR/bin/pip"
           echo "Using venv Python: $VENV_PYTHON"

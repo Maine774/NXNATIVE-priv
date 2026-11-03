@@ -92,16 +92,20 @@ jobs:
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # setup-python@v5 prepends toolcache Python to PATH, but toolcache Python may not have pip
-          # Use explicit toolcache Python and pip paths
-          PYTHON="/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python3"
-          PIP="/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/pip3"
-          echo "Using Python: $PYTHON"
-          echo "Using Pip: $PIP"
-          # Ensure pip is available in toolcache Python
-          "$PYTHON" -m ensurepip --upgrade 2>/dev/null || true
-          "$PIP" install --upgrade pip setuptools wheel
-          "$PIP" install \
+          # setup-python@v5 prepends toolcache Python to PATH
+          TOOLCACHE_PYTHON="/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python3"
+          echo "Using Python: $TOOLCACHE_PYTHON"
+
+          # Create a virtual environment to isolate from system Python
+          "$TOOLCACHE_PYTHON" -m venv /tmp/venv
+          VENV_PYTHON="/tmp/venv/bin/python"
+          VENV_PIP="/tmp/venv/bin/pip"
+
+          echo "Using Venv Python: $VENV_PYTHON"
+          echo "Using Venv Pip: $VENV_PIP"
+
+          "$VENV_PIP" install --upgrade pip setuptools wheel
+          "$VENV_PIP" install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -111,7 +115,10 @@ jobs:
             boto3 \
             botocore
           # Verify critical imports
-          "$PYTHON" -c "import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          "$VENV_PYTHON" -c "import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+
+          # Export venv Python for subsequent steps
+          echo "VENV_PYTHON=$VENV_PYTHON" >> $GITHUB_ENV
 
       - name: Prepare Keys
         run: |
@@ -141,7 +148,7 @@ jobs:
       - name: Download Game, Update, DLC
         run: |
           set -euo pipefail
-          python3 << 'PYEOF'
+          "$VENV_PYTHON" << 'PYEOF'
           import os, sys, subprocess, urllib.parse, urllib.request, urllib.error, json, base64, boto3, botocore, time
           from botocore.config import Config
 
@@ -351,9 +358,9 @@ jobs:
 
           # Run build with output logging
           if [ "${PLATFORM}" = "ios" ]; then
-            python3 scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys --platform ios 2>&1 | tee build.log
+            "$VENV_PYTHON" scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys --platform ios 2>&1 | tee build.log
           else
-            python3 scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys --platform mac-app --gpu none 2>&1 | tee build.log
+            "$VENV_PYTHON" scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys --platform mac-app --gpu none 2>&1 | tee build.log
           fi
 
       - name: Package Output

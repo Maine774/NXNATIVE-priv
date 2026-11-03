@@ -69,11 +69,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
       - name: Install macOS Dependencies
         run: |
           set -euo pipefail
           brew update
-          brew install xcodegen zstd glslang p7zip python@3.12
+          brew install xcodegen zstd glslang p7zip
           brew install --cask dotnet-sdk
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -downloadComponent MetalToolchain || true
@@ -83,24 +89,18 @@ jobs:
           glslangValidator --version
           7z | head -1
           dotnet --version
-          /opt/homebrew/bin/python3.12 --version
+          python --version
 
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # Use Homebrew Python 3.12 directly with --target to avoid Framework Python venv issues
-          # Both system and Homebrew Python on macOS are Framework builds; venv inherits the framework
-          # behavior where site-packages ends up at the end of sys.path and imports fail mysteriously.
-          # Using --target with explicit PYTHONPATH avoids this entirely.
-          # Don't pre-install pip/setuptools/wheel to target dir - it creates conflicts.
-          BREW_PYTHON="/opt/homebrew/bin/python3.12"
-          TARGET_DIR="/Users/runner/pypkgs"
-          echo "Using Python: $BREW_PYTHON"
-          echo "Target dir: $TARGET_DIR"
-          mkdir -p "$TARGET_DIR"
-
-          # Install all packages directly to target directory in one command
-          "$BREW_PYTHON" -m pip install \
+          # Use toolcache Python from setup-python (standalone non-Framework build on macOS)
+          # This avoids all Framework Python venv issues. Create venv and install packages there.
+          echo "Using Python: $(which python)"
+          python --version
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install --upgrade pip setuptools wheel
+          /tmp/venv/bin/pip install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -108,15 +108,13 @@ jobs:
             zbic \
             "backports.zstd; python_version < '3.14'" \
             boto3 \
-            botocore \
-            --target "$TARGET_DIR"
+            botocore
 
-          # Verify critical imports using PYTHONPATH
-          PYTHONPATH="$TARGET_DIR:${PYTHONPATH:-}" "$BREW_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          # Verify critical imports
+          /tmp/venv/bin/python -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
-          # Export Python and PYTHONPATH for subsequent steps
-          echo "VENV_PYTHON=$BREW_PYTHON" >> $GITHUB_ENV
-          echo "PYTHONPATH=$TARGET_DIR" >> $GITHUB_ENV
+          # Export venv Python for subsequent steps
+          echo "VENV_PYTHON=/tmp/venv/bin/python" >> $GITHUB_ENV
 
       - name: Prepare Keys
         run: |

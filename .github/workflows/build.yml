@@ -93,13 +93,14 @@ jobs:
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # Use toolcache Python from setup-python (standalone non-Framework build on macOS)
-          # This avoids all Framework Python venv issues. Create venv and install packages there.
+          # Use toolcache Python from setup-python directly (no venv)
+          # The toolcache Python on macOS is a Framework build; venv inherits the
+          # Framework behavior where site-packages ends up at the end of sys.path.
+          # In CI, we can install directly to the toolcache Python's site-packages.
           echo "Using Python: $(which python)"
           python --version
-          python -m venv /tmp/venv
-          /tmp/venv/bin/pip install --upgrade pip setuptools wheel
-          /tmp/venv/bin/pip install \
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -110,10 +111,10 @@ jobs:
             botocore
 
           # Verify critical imports
-          /tmp/venv/bin/python -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          python -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
-          # Export venv Python for subsequent steps
-          echo "VENV_PYTHON=/tmp/venv/bin/python" >> $GITHUB_ENV
+          # Export toolcache Python for subsequent steps
+          echo "VENV_PYTHON=$(which python)" >> $GITHUB_ENV
 
       - name: Prepare Keys
         run: |

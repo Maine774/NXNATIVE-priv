@@ -92,14 +92,14 @@ jobs:
           # Both system and Homebrew Python on macOS are Framework builds; venv inherits the framework
           # behavior where site-packages ends up at the end of sys.path and imports fail mysteriously.
           # Using --target with explicit PYTHONPATH avoids this entirely.
+          # Don't pre-install pip/setuptools/wheel to target dir - it creates conflicts.
           BREW_PYTHON="/opt/homebrew/bin/python3.12"
           TARGET_DIR="/Users/runner/pypkgs"
           echo "Using Python: $BREW_PYTHON"
           echo "Target dir: $TARGET_DIR"
           mkdir -p "$TARGET_DIR"
 
-          # Install packages directly to target directory
-          "$BREW_PYTHON" -m pip install --upgrade pip setuptools wheel --target "$TARGET_DIR"
+          # Install all packages directly to target directory in one command
           "$BREW_PYTHON" -m pip install \
             lz4 \
             "capstone>=5,<6" \

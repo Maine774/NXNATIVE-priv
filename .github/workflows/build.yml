@@ -81,6 +81,12 @@ jobs:
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
+          # Debug: check pip and python locations in micromamba env
+          micromamba run -n nxnative which pip
+          micromamba run -n nxnative which python
+          micromamba run -n nxnative pip config list
+          micromamba run -n nxnative python -m site
+
           # Install all Python packages via pip in the micromamba environment
           micromamba run -n nxnative pip install \
             lz4 \
@@ -91,6 +97,9 @@ jobs:
             "backports.zstd; python_version < '3.14'" \
             boto3 \
             botocore
+
+          # Debug: check where packages were installed
+          micromamba run -n nxnative pip show -f fonttools
 
       - name: Verify Python Environment
         run: |

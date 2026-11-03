@@ -77,36 +77,20 @@ jobs:
           create-args: >-
             python=3.12
             pip
-            setuptools
-            wheel
-            lz4
-            "capstone>=5,<6"
-            fonttools
-            nsz
-            zbic
-            boto3
+
+      - name: Install Python Dependencies
+        run: |
+          set -euo pipefail
+          # Install all Python packages via pip in the micromamba environment
+          micromamba run -n nxnative pip install \
+            lz4 \
+            "capstone>=5,<6" \
+            fonttools \
+            nsz \
+            zbic \
+            "backports.zstd; python_version < '3.14'" \
+            boto3 \
             botocore
-
-      - name: Install Conditional Dependencies
-        run: |
-          set -euo pipefail
-          # Install backports.zstd for Python < 3.14 (we're on 3.12)
-          micromamba run -n nxnative pip install "backports.zstd; python_version < '3.14'"
-
-      - name: Install macOS Dependencies
-        run: |
-          set -euo pipefail
-          brew update
-          brew install xcodegen zstd glslang p7zip
-          brew install --cask dotnet-sdk
-          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-          xcodebuild -downloadComponent MetalToolchain || true
-          # Verify installations
-          xcodegen --version
-          zstd --version
-          glslangValidator --version
-          7z | head -1
-          dotnet --version
 
       - name: Verify Python Environment
         run: |
@@ -114,6 +98,8 @@ jobs:
           # Verify critical imports
           micromamba run -n nxnative python -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
           echo "VENV_PYTHON=micromamba run -n nxnative python" >> $GITHUB_ENV
+
+      - name: Install macOS Dependencies
 
       - name: Prepare Keys
         run: |

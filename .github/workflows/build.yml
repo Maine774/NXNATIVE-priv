@@ -112,10 +112,14 @@ jobs:
 
           # Debug: check where packages were installed
           micromamba run -n nxnative pip show -f fonttools
+          micromamba run -n nxnative ls -la /Users/runner/micromamba/envs/nxnative/lib/python3.12/site-packages/ | grep -i font
 
       - name: Verify Python Environment
         run: |
           set -euo pipefail
+          # Debug: check fonttools directory
+          micromamba run -n nxnative python -c "import sys; print('Python path:', sys.path)"
+          micromamba run -n nxnative python -c "import fonttools; print('fonttools import OK')"
           # Verify critical imports
           micromamba run -n nxnative python -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
           echo "VENV_PYTHON=micromamba run -n nxnative python" >> $GITHUB_ENV

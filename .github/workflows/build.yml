@@ -92,15 +92,19 @@ jobs:
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # setup-python@v5 prepends toolcache Python to PATH
-          TOOLCACHE_PYTHON="/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python3"
-          echo "Using Python: $TOOLCACHE_PYTHON"
+          # Use system Python (Homebrew on macOS-latest) to create a proper venv with --copies
+          # This avoids toolcache vs system Python conflicts and /tmp symlink issues
+          VENV_DIR="/Users/runner/venv"
+          python3 -m venv --copies "$VENV_DIR"
+          VENV_PYTHON="$VENV_DIR/bin/python"
+          VENV_PIP="$VENV_DIR/bin/pip"
+          echo "Using venv Python: $VENV_PYTHON"
 
-          # Install packages using --prefix to create proper site-packages structure
-          # (--target puts packages directly in the dir, --prefix creates lib/pythonX.Y/site-packages)
-          PREFIX_DIR="/tmp/pyprefix"
-          "$TOOLCACHE_PYTHON" -m pip install --upgrade pip setuptools wheel --prefix "$PREFIX_DIR"
-          "$TOOLCACHE_PYTHON" -m pip install \
+          # Upgrade pip/setuptools/wheel in venv
+          "$VENV_PIP" install --upgrade pip setuptools wheel
+
+          # Install required packages in venv
+          "$VENV_PIP" install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -108,20 +112,13 @@ jobs:
             zbic \
             "backports.zstd; python_version < '3.14'" \
             boto3 \
-            botocore \
-            --prefix "$PREFIX_DIR"
+            botocore
 
-          # The packages are now in $PREFIX_DIR/lib/python3.12/site-packages/
-          SITE_PACKAGES="$PREFIX_DIR/lib/python3.12/site-packages"
-          echo "=== Installed packages in $SITE_PACKAGES ==="
-          ls -la "$SITE_PACKAGES"/
+          # Verify critical imports
+          "$VENV_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
-          # Verify critical imports using PYTHONPATH
-          PYTHONPATH="$SITE_PACKAGES:${PYTHONPATH:-}" "$TOOLCACHE_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
-
-          # Export Python and PYTHONPATH for subsequent steps
-          echo "VENV_PYTHON=$TOOLCACHE_PYTHON" >> $GITHUB_ENV
-          echo "PYTHONPATH=$SITE_PACKAGES" >> $GITHUB_ENV
+          # Export Python for subsequent steps
+          echo "VENV_PYTHON=$VENV_PYTHON" >> $GITHUB_ENV
 
       - name: Prepare Keys
         run: |

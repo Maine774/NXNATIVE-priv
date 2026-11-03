@@ -96,22 +96,11 @@ jobs:
           TOOLCACHE_PYTHON="/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python3"
           echo "Using Python: $TOOLCACHE_PYTHON"
 
-          # Create a virtual environment to isolate from system Python
-          "$TOOLCACHE_PYTHON" -m venv /tmp/venv
-          VENV_PYTHON="/tmp/venv/bin/python"
-          VENV_PIP="/tmp/venv/bin/pip"
-
-          echo "Using Venv Python: $VENV_PYTHON"
-          echo "Using Venv Pip: $VENV_PIP"
-
-          # Debug: check venv structure
-          ls -la /tmp/venv/
-          ls -la /tmp/venv/lib/
-          ls -la /tmp/venv/lib/python3.12/
-          ls -la /tmp/venv/lib/python3.12/site-packages/
-
-          "$VENV_PIP" install --upgrade pip setuptools wheel
-          "$VENV_PIP" install \
+          # Install packages to a local directory (avoids venv/framework issues on macOS)
+          PKG_DIR="/tmp/pypkgs"
+          mkdir -p "$PKG_DIR"
+          "$TOOLCACHE_PYTHON" -m pip install --upgrade pip setuptools wheel --target "$PKG_DIR"
+          "$TOOLCACHE_PYTHON" -m pip install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -119,19 +108,19 @@ jobs:
             zbic \
             "backports.zstd; python_version < '3.14'" \
             boto3 \
-            botocore
+            botocore \
+            --target "$PKG_DIR"
 
           # Debug: check installed packages
-          echo "=== Installed packages ==="
-          "$VENV_PIP" list
-          echo "=== site-packages after install ==="
-          ls -la /tmp/venv/lib/python3.12/site-packages/
+          echo "=== Installed packages in $PKG_DIR ==="
+          ls -la "$PKG_DIR"/
 
-          # Verify critical imports
-          "$VENV_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          # Verify critical imports using PYTHONPATH
+          PYTHONPATH="$PKG_DIR:$PYTHONPATH" "$TOOLCACHE_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
-          # Export venv Python for subsequent steps
-          echo "VENV_PYTHON=$VENV_PYTHON" >> $GITHUB_ENV
+          # Export Python and PYTHONPATH for subsequent steps
+          echo "VENV_PYTHON=$TOOLCACHE_PYTHON" >> $GITHUB_ENV
+          echo "PYTHONPATH=$PKG_DIR" >> $GITHUB_ENV
 
       - name: Prepare Keys
         run: |

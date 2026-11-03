@@ -81,22 +81,34 @@ jobs:
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # Debug: check pip and python locations in micromamba env
-          micromamba run -n nxnative which pip
-          micromamba run -n nxnative which python
-          micromamba run -n nxnative pip config list
-          micromamba run -n nxnative python -m site
+          # Install Python packages via micromamba (conda) where available, pip for the rest
+          # conda-forge packages: lz4, capstone, fonttools, boto3, botocore, zstd, python-dateutil, urllib3, s3transfer, jmespath, six
+          # pip-only: nsz, zbic, enlighten, blessed, prefixed, jinxed, wcwidth, pycryptodome
 
-          # Install all Python packages via pip in the micromamba environment
-          micromamba run -n nxnative pip install \
+          # Install conda packages first
+          micromamba install -n nxnative -y -c conda-forge \
             lz4 \
-            "capstone>=5,<6" \
+            capstone \
             fonttools \
+            boto3 \
+            botocore \
+            zstd \
+            python-dateutil \
+            urllib3 \
+            s3transfer \
+            jmespath \
+            six
+
+          # Install pip-only packages
+          micromamba run -n nxnative pip install \
             nsz \
             zbic \
-            "backports.zstd; python_version < '3.14'" \
-            boto3 \
-            botocore
+            enlighten \
+            blessed \
+            prefixed \
+            jinxed \
+            wcwidth \
+            pycryptodome
 
           # Debug: check where packages were installed
           micromamba run -n nxnative pip show -f fonttools
@@ -104,15 +116,6 @@ jobs:
       - name: Verify Python Environment
         run: |
           set -euo pipefail
-          # Debug: check python executable and site-packages
-          micromamba run -n nxnative which python
-          micromamba run -n nxnative python -c "import sys; print('Executable:', sys.executable)"
-          micromamba run -n nxnative python -c "import sys; print('Python path:', sys.path)"
-          micromamba run -n nxnative ls -la /Users/runner/micromamba/envs/nxnative/lib/python3.12/site-packages/ | head -30
-          micromamba run -n nxnative ls -la /Users/runner/micromamba/envs/nxnative/lib/python3.12/site-packages/fontTools/
-          micromamba run -n nxnative python -c "import os; print(os.path.exists('/Users/runner/micromamba/envs/nxnative/lib/python3.12/site-packages/fontTools/__init__.py'))"
-          micromamba run -n nxnative python -c "import sys; sys.path.insert(0, '/Users/runner/micromamba/envs/nxnative/lib/python3.12/site-packages'); import fontTools; print('fontTools import OK')"
-
           # Verify critical imports
           micromamba run -n nxnative python -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
           echo "VENV_PYTHON=micromamba run -n nxnative python" >> $GITHUB_ENV

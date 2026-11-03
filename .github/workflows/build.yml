@@ -94,13 +94,15 @@ jobs:
         run: |
           set -euo pipefail
           # Use toolcache Python from setup-python directly (no venv)
-          # The toolcache Python on macOS is a Framework build; venv inherits the
-          # Framework behavior where site-packages ends up at the end of sys.path.
-          # In CI, we can install directly to the toolcache Python's site-packages.
-          echo "Using Python: $(which python)"
-          python --version
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip install \
+          # The toolcache Python on macOS is a Framework build linked to the system
+          # Framework's standard library. Using `python -m pip` picks up the system pip.
+          # Instead, use the toolcache Python's pip binary directly.
+          TOOLCACHE_PYTHON="/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python"
+          TOOLCACHE_PIP="/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/pip"
+          echo "Using Python: $TOOLCACHE_PYTHON"
+          "$TOOLCACHE_PYTHON" --version
+          "$TOOLCACHE_PIP" install --upgrade pip setuptools wheel
+          "$TOOLCACHE_PIP" install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -111,10 +113,10 @@ jobs:
             botocore
 
           # Verify critical imports
-          python -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          "$TOOLCACHE_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
           # Export toolcache Python for subsequent steps
-          echo "VENV_PYTHON=$(which python)" >> $GITHUB_ENV
+          echo "VENV_PYTHON=$TOOLCACHE_PYTHON" >> $GITHUB_ENV
 
       - name: Prepare Keys
         run: |

@@ -92,8 +92,10 @@ jobs:
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          python3 -m pip install --upgrade pip setuptools wheel
-          python3 -m pip install \
+          # Use Python from setup-python toolcache to avoid system Python conflict
+          PYTHON="${{ runner.tool_cache }}/Python/3.12.10/arm64/bin/python3"
+          "${PYTHON}" -m pip install --upgrade pip setuptools wheel
+          "${PYTHON}" -m pip install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -103,7 +105,7 @@ jobs:
             boto3 \
             botocore
           # Verify critical imports
-          python3 -c "import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          "${PYTHON}" -c "import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
       - name: Prepare Keys
         run: |

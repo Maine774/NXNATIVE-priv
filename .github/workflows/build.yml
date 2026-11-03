@@ -104,6 +104,12 @@ jobs:
       - name: Verify Python Environment
         run: |
           set -euo pipefail
+          # Debug: check python executable and site-packages
+          micromamba run -n nxnative which python
+          micromamba run -n nxnative python -c "import sys; print('Executable:', sys.executable)"
+          micromamba run -n nxnative python -c "import sys; print('Python path:', sys.path)"
+          micromamba run -n nxnative ls -la /Users/runner/micromamba/envs/nxnative/lib/python3.12/site-packages/ | head -30
+
           # Verify critical imports
           micromamba run -n nxnative python -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
           echo "VENV_PYTHON=micromamba run -n nxnative python" >> $GITHUB_ENV

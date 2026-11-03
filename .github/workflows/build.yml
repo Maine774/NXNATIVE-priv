@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           brew update
-          brew install xcodegen zstd glslang p7zip
+          brew install xcodegen zstd glslang p7zip python@3.12
           brew install --cask dotnet-sdk
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -downloadComponent MetalToolchain || true
@@ -83,19 +83,16 @@ jobs:
           glslangValidator --version
           7z | head -1
           dotnet --version
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+          /opt/homebrew/opt/python@3.12/bin/python3 --version
 
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # Use setup-python's toolcache Python (via 'python' command, not 'python3')
+          # Use Homebrew Python 3.12 (standalone build, not Framework Python)
           # to create a proper venv with --copies. This avoids Framework Python conflicts.
+          BREW_PYTHON="/opt/homebrew/opt/python@3.12/bin/python3"
           VENV_DIR="/Users/runner/venv"
-          python -m venv --copies "$VENV_DIR"
+          "$BREW_PYTHON" -m venv --copies "$VENV_DIR"
           VENV_PYTHON="$VENV_DIR/bin/python"
           VENV_PIP="$VENV_DIR/bin/pip"
           echo "Using venv Python: $VENV_PYTHON"

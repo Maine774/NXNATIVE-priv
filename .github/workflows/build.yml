@@ -49,7 +49,7 @@ jobs:
   build:
     name: Build App (${{ inputs.platform }})
     runs-on: macos-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       METHOD: ${{ inputs.method }}
       SOURCE: ${{ inputs.source }}
@@ -72,10 +72,18 @@ jobs:
 
       - name: Install macOS Dependencies
         run: |
+          set -euo pipefail
+          brew update
           brew install xcodegen zstd glslang p7zip
           brew install --cask dotnet-sdk
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -downloadComponent MetalToolchain || true
+          # Verify installations
+          xcodegen --version
+          zstd --version
+          glslangValidator --version
+          7z --version
+          dotnet --version
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -84,28 +92,50 @@ jobs:
 
       - name: Install Python Dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; python_version < '3.14'" boto3 botocore
+          set -euo pipefail
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install \
+            lz4 \
+            "capstone>=5,<6" \
+            fonttools \
+            nsz \
+            zbic \
+            "backports.zstd; python_version < '3.14'" \
+            boto3 \
+            botocore
+          # Verify critical imports
+          python3 -c "import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
-      - name: Prepare Keys (matches old working workflow)
+      - name: Prepare Keys
         run: |
+          set -euo pipefail
           mkdir -p keys_input
+          # Write secret exactly as provided (handles both raw and base64)
           cat << 'EOF' > keys_input/prod.keys
           ${{ secrets.BASE64_KEYS }}
           EOF
+          # Normalize line endings (macOS sed)
           sed -i '' 's/\r$//' keys_input/prod.keys
           # Auto-detect base64 vs raw
           if [ "$(wc -l < keys_input/prod.keys)" -eq 1 ] && grep -qE '^[A-Za-z0-9+/=]+$' keys_input/prod.keys; then
-            base64 -d keys_input/prod.keys > keys_input/prod.keys.decoded 2>/dev/null && mv keys_input/prod.keys.decoded keys_input/prod.keys
-            echo "Decoded base64 keys"
+            if base64 -d keys_input/prod.keys > keys_input/prod.keys.decoded 2>/dev/null; then
+              mv keys_input/prod.keys.decoded keys_input/prod.keys
+              echo "Decoded base64 keys"
+            else
+              echo "Base64 decode failed, using as raw"
+            fi
           else
             echo "Using raw keys"
           fi
+          # Verify keys file has content
+          [ -s keys_input/prod.keys ] || { echo "ERROR: prod.keys is empty"; exit 1; }
+          echo "Keys file size: $(wc -c < keys_input/prod.keys) bytes"
 
       - name: Download Game, Update, DLC
         run: |
+          set -euo pipefail
           python3 << 'PYEOF'
-          import os, sys, subprocess, urllib.parse, urllib.request, json, base64, boto3, botocore
+          import os, sys, subprocess, urllib.parse, urllib.request, urllib.error, json, base64, boto3, botocore, time
           from botocore.config import Config
 
           method = os.environ['METHOD']
@@ -116,7 +146,7 @@ jobs:
 
           # ===== Helpers =====
           def clean_url(raw):
-              """Clean URL: fix spaces, preserve query params (from old workflow)"""
+              """Clean URL: fix spaces, preserve query params"""
               if " " in raw and method == "ddl":
                   parts = raw.split('?', 1)
                   if len(parts) == 2:
@@ -127,32 +157,49 @@ jobs:
               return raw
 
           def is_archive(url):
+              """Check if URL/path indicates archive"""
               return any(x in url.lower() for x in ['.zip', '.rar', '.7z', 'compressed'])
 
+          def download_with_retry(url, out_path, max_retries=3, timeout=300):
+              """Download with retry logic and timeout"""
+              for attempt in range(1, max_retries + 1):
+                  try:
+                      print(f"Downloading: {out_path} (attempt {attempt}/{max_retries})")
+                      req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                      with urllib.request.urlopen(req, timeout=timeout) as resp:
+                          if resp.status >= 400:
+                              raise urllib.error.HTTPError(url, resp.status, resp.reason, resp.headers, None)
+                          with open(out_path, 'wb') as f:
+                              while chunk := resp.read(1024*1024):
+                                  f.write(chunk)
+                      print(f"  Downloaded {os.path.getsize(out_path)} bytes")
+                      return
+                  except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ConnectionError) as e:
+                      print(f"  Attempt {attempt} failed: {e}")
+                      if attempt == max_retries:
+                          raise
+                      time.sleep(5 * attempt)  # Exponential backoff
+
           def download_direct(url, out_path):
-              print(f"Downloading: {out_path}")
-              req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-              with urllib.request.urlopen(req) as resp, open(out_path, 'wb') as f:
-                  while chunk := resp.read(1024*1024):
-                      f.write(chunk)
+              download_with_retry(clean_url(url), out_path)
 
           def download_gdrive(file_id, out_path):
               api_key = os.environ.get('DRIVE_API_KEY', '').strip()
               if not api_key:
                   sys.exit("DRIVE_API_KEY secret not set")
               domain = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vZHJpdmUvdjMvZmlsZXMv").decode()
-              # Try get filename from metadata
+              # Try get filename from metadata (optional)
               try:
                   meta_url = f"{domain}{file_id}?key={api_key}"
                   req = urllib.request.Request(meta_url, headers={'User-Agent': 'Mozilla/5.0'})
-                  with urllib.request.urlopen(req) as resp:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
                       meta = json.loads(resp.read().decode())
                   filename = meta.get('name', 'game.nsp').lower()
-              except:
-                  filename = "game.nsp"
+                  print(f"  Drive filename: {filename}")
+              except Exception as e:
+                  print(f"  Metadata fetch failed: {e}")
               dl_url = f"{domain}{file_id}?alt=media&key={api_key}"
               download_direct(dl_url, out_path)
-              return filename
 
           def get_r2_client():
               account_id = os.environ.get('R2_ACCOUNT_ID')
@@ -164,10 +211,11 @@ jobs:
               return boto3.client(
                   's3', endpoint_url=endpoint,
                   aws_access_key_id=access_key, aws_secret_access_key=secret_key,
-                  config=Config(signature_version='s3v4'), region_name='auto'
+                  config=Config(signature_version='s3v4', retries={'max_attempts': 3}), region_name='auto'
               )
 
           def parse_r2_key(base_url):
+              """Extract object key from R2 base URL"""
               bucket = os.environ.get('R2_BUCKET', '')
               parsed = urllib.parse.urlparse(base_url)
               path = parsed.path.lstrip('/')
@@ -177,29 +225,37 @@ jobs:
 
           def download_r2(s3, object_key, out_path, archive=False):
               bucket = os.environ['R2_BUCKET']
+              print(f"Generating signed URL for: {object_key}")
               url = s3.generate_presigned_url('get_object', Params={'Bucket': bucket, 'Key': object_key}, ExpiresIn=7200)
-              print(f"Downloading (R2): {out_path}")
-              req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-              with urllib.request.urlopen(req) as resp, open(out_path, 'wb') as f:
-                  while chunk := resp.read(1024*1024):
-                      f.write(chunk)
+              download_with_retry(url, out_path)
               if archive:
+                  print(f"Extracting archive...")
                   subprocess.run(['7z', 'x', out_path, '-ogame_input/', '-y'], check=True)
                   os.remove(out_path)
 
           def find_game_file(exclude=()):
+              """Find .nsp/.xci file not matching exclude prefixes"""
               for root, _, files in os.walk('game_input'):
-                  for f in files:
-                      if f.lower().endswith(('.nsp', '.xci')) and not any(f.startswith(p) for p in exclude):
-                          return os.path.join(root, f)
+                  for f in sorted(files):  # Sort for deterministic selection
+                      if f.lower().endswith(('.nsp', '.xci')):
+                          if not any(f.startswith(p) for p in exclude):
+                              return os.path.join(root, f)
               return None
 
+          def extract_archive(archive_path):
+              """Extract archive to game_input"""
+              print(f"Extracting {archive_path}...")
+              subprocess.run(['7z', 'x', archive_path, '-ogame_input/', '-y'], check=True)
+              os.remove(archive_path)
+
           def download_file(kind, src, tmp_name, s3=None):
+              """Download and extract a file (game/update/dl)"""
+              # Determine if archive from source URL/key
               archive = is_archive(src)
               tmp = f'game_input/{tmp_name}.tmp' if archive else f'game_input/{tmp_name}.bin'
 
               if method == 'ddl':
-                  download_direct(clean_url(src), tmp)
+                  download_direct(src, tmp)
               elif method == 'r2':
                   if not s3:
                       sys.exit(f"R2 method requires R2 secrets for {kind}")
@@ -209,80 +265,104 @@ jobs:
               else:
                   sys.exit(f"Unknown method: {method}")
 
-              if archive:
-                  print(f"Extracting {kind} archive...")
-                  subprocess.run(['7z', 'x', tmp, '-ogame_input/', '-y'], check=True)
-                  os.remove(tmp)
+              # Extract if archive (and not already extracted by download_r2)
+              if archive and os.path.exists(tmp):
+                  extract_archive(tmp)
 
           # ===== Main =====
           s3 = get_r2_client() if method == 'r2' else None
 
+          # Validate R2 creds if using R2
+          if method == 'r2' and not s3:
+              sys.exit("R2 method selected but R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY secrets not set")
+
           # GAME (required)
+          print("=== Downloading base game ===")
           download_file('game', source, 'game', s3)
           game_file = find_game_file(exclude=('game_update.', 'game_dlc.'))
           if not game_file:
               sys.exit("No .nsp/.xci found for game")
           ext = 'xci' if '.xci' in game_file.lower() else 'nsp'
-          os.rename(game_file, f'game_input/game.{ext}')
-          print(f"Game: game_input/game.{ext}")
+          final_game = f'game_input/game.{ext}'
+          os.rename(game_file, final_game)
+          print(f"Game ready: {final_game}")
           with open('game_input/.ext', 'w') as f:
               f.write(ext)
 
           # UPDATE (optional)
           if update_source:
+              print("=== Downloading update ===")
               download_file('update', update_source, 'update', s3)
               upd = find_game_file(exclude=('game.', 'game_dlc.'))
               if upd:
                   uext = 'xci' if '.xci' in upd.lower() else 'nsp'
                   os.rename(upd, f'game_input/game_update.{uext}')
-                  print(f"Update: game_input/game_update.{uext}")
+                  print(f"Update ready: game_input/game_update.{uext}")
+              else:
+                  print("Warning: No update file found after download")
 
           # DLC (optional)
           if dlc_source:
+              print("=== Downloading DLC ===")
               download_file('dlc', dlc_source, 'dlc', s3)
               dlc = find_game_file(exclude=('game.', 'game_update.'))
               if dlc:
                   dext = 'xci' if '.xci' in dlc.lower() else 'nsp'
                   os.rename(dlc, f'game_input/game_dlc.{dext}')
-                  print(f"DLC: game_input/game_dlc.{dext}")
+                  print(f"DLC ready: game_input/game_dlc.{dext}")
+              else:
+                  print("Warning: No DLC file found after download")
 
+          # List final game_input contents
+          print("=== game_input contents ===")
+          for root, dirs, files in os.walk('game_input'):
+              for f in files:
+                  fp = os.path.join(root, f)
+                  print(f"  {fp} ({os.path.getsize(fp)} bytes)")
           PYEOF
+
+      - name: Verify Game Files
+        run: |
+          set -euo pipefail
+          [ -f game_input/game.nsp ] || [ -f game_input/game.xci ] || { echo "ERROR: No game.nsp or game.xci found"; exit 1; }
+          echo "Game file verified"
+          ls -la game_input/
 
       - name: Build IPA / App
         run: |
           set -euo pipefail
-          EXT=$(cat game_input/.ext)
-          GAME="game_input/game.${EXT}"
 
-          echo "Building ${PLATFORM} from ${GAME}"
+          echo "Building ${PLATFORM} from game_input/"
 
           # Disable prebuild download in build script (we already have files)
+          # Use portable sed syntax (works on both BSD and GNU sed)
           if [ -f scripts/build_ipa_from_nsp.py ]; then
-            sed -i.bak 's/^\(.*download_game.*\)$/# \1  # DISABLED/' scripts/build_ipa_from_nsp.py
-            sed -i.bak 's/^\(.*fetch_game.*\)$/# \1  # DISABLED/' scripts/build_ipa_from_nsp.py
-            sed -i.bak 's/^\(.*pso_prebuild.*\)$/# \1  # DISABLED/' scripts/build_ipa_from_nsp.py
+            sed -i '' 's/^\(.*download_game.*\)$/# \1  # DISABLED/' scripts/build_ipa_from_nsp.py
+            sed -i '' 's/^\(.*fetch_game.*\)$/# \1  # DISABLED/' scripts/build_ipa_from_nsp.py
+            sed -i '' 's/^\(.*pso_prebuild.*\)$/# \1  # DISABLED/' scripts/build_ipa_from_nsp.py
           fi
 
+          # Run build with output logging
           if [ "${PLATFORM}" = "ios" ]; then
-            python3 scripts/build_ipa_from_nsp.py "${GAME}" -k keys_input/prod.keys --platform ios
+            python3 scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys --platform ios 2>&1 | tee build.log
           else
-            python3 scripts/build_ipa_from_nsp.py "${GAME}" -k keys_input/prod.keys --platform mac-app --gpu none
+            python3 scripts/build_ipa_from_nsp.py game_input -k keys_input/prod.keys --platform mac-app --gpu none 2>&1 | tee build.log
           fi
 
-      - name: Package Output (matches old workflow)
+      - name: Package Output
         run: |
           set -euo pipefail
           NAME="${ARTIFACT_NAME}"
           if [ "${PLATFORM}" = "ios" ]; then
-            IPA=$(find . -name "*.ipa" -maxdepth 3 | head -1)
-            [ -n "$IPA" ] || { echo "No IPA found"; exit 1; }
+            IPA=$(find . -name "*.ipa" -maxdepth 5 | head -1)
+            [ -n "$IPA" ] || { echo "No IPA found"; cat build.log; exit 1; }
             mv "$IPA" "${NAME}.ipa"
-            echo "Created ${NAME}.ipa"
+            echo "Created ${NAME}.ipa ($(du -h "${NAME}.ipa" | cut -f1))"
           else
-            APP=$(find . -name "*.app" -maxdepth 3 | head -1)
-            [ -n "$APP" ] || { echo "No .app found"; exit 1; }
+            APP=$(find . -name "*.app" -maxdepth 5 | head -1)
+            [ -n "$APP" ] || { echo "No .app found"; cat build.log; exit 1; }
             hdiutil create -volname "$NAME" -srcfolder "$APP" -ov -format UDZO "${NAME}.dmg"
-            echo "Created ${NAME}.dmg"
+            echo "Created ${NAME}.dmg ($(du -h "${NAME}.dmg" | cut -f1))"
           fi
 
       - name: Upload Artifact
@@ -294,3 +374,11 @@ jobs:
             *.dmg
           retention-days: 7
           if-no-files-found: error
+
+      - name: Upload Build Log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}-build-log
+          path: build.log
+          retention-days: 7

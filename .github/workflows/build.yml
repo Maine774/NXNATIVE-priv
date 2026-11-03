@@ -116,7 +116,7 @@ jobs:
           ls -la "$PKG_DIR"/
 
           # Verify critical imports using PYTHONPATH
-          PYTHONPATH="$PKG_DIR:$PYTHONPATH" "$TOOLCACHE_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          PYTHONPATH="$PKG_DIR:${PYTHONPATH:-}" "$TOOLCACHE_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
           # Export Python and PYTHONPATH for subsequent steps
           echo "VENV_PYTHON=$TOOLCACHE_PYTHON" >> $GITHUB_ENV

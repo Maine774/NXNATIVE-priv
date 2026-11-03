@@ -84,23 +84,20 @@ jobs:
           7z | head -1
           dotnet --version
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # setup-python@v5 prepends toolcache Python to PATH
-          TOOLCACHE_PYTHON="/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python3"
-          echo "Using Python: $TOOLCACHE_PYTHON"
+          # Use system Python 3.12 (pre-installed on macOS runner)
+          # python3 is symlinked to /Library/Frameworks/Python.framework/Versions/3.12/bin/python3
+          PYTHON_BIN="python3"
+          PIP_BIN="pip3"
+          echo "Using Python: $(which $PYTHON_BIN)"
+          $PYTHON_BIN --version
+          $PIP_BIN --version
 
-          # Install packages to a local directory (avoids venv/framework issues on macOS)
-          PKG_DIR="/tmp/pypkgs"
-          mkdir -p "$PKG_DIR"
-          "$TOOLCACHE_PYTHON" -m pip install --upgrade pip setuptools wheel --target "$PKG_DIR"
-          "$TOOLCACHE_PYTHON" -m pip install \
+          # Install packages to system site-packages (fine on CI runner)
+          $PIP_BIN install --upgrade pip setuptools wheel
+          $PIP_BIN install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -108,19 +105,13 @@ jobs:
             zbic \
             "backports.zstd; python_version < '3.14'" \
             boto3 \
-            botocore \
-            --target "$PKG_DIR"
+            botocore
 
-          # Debug: check installed packages
-          echo "=== Installed packages in $PKG_DIR ==="
-          ls -la "$PKG_DIR"/
+          # Verify critical imports
+          $PYTHON_BIN -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
-          # Verify critical imports using PYTHONPATH
-          PYTHONPATH="$PKG_DIR:${PYTHONPATH:-}" "$TOOLCACHE_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
-
-          # Export Python and PYTHONPATH for subsequent steps
-          echo "VENV_PYTHON=$TOOLCACHE_PYTHON" >> $GITHUB_ENV
-          echo "PYTHONPATH=$PKG_DIR" >> $GITHUB_ENV
+          # Export Python for subsequent steps
+          echo "VENV_PYTHON=$PYTHON_BIN" >> $GITHUB_ENV
 
       - name: Prepare Keys
         run: |

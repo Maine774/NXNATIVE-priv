@@ -83,14 +83,14 @@ jobs:
           glslangValidator --version
           7z | head -1
           dotnet --version
-          /opt/homebrew/opt/python@3.12/bin/python3 --version
+          /opt/homebrew/bin/python3.12 --version
 
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
           # Use Homebrew Python 3.12 (standalone build, not Framework Python)
           # to create a proper venv with --copies. This avoids Framework Python conflicts.
-          BREW_PYTHON="/opt/homebrew/opt/python@3.12/bin/python3"
+          BREW_PYTHON="/opt/homebrew/bin/python3.12"
           VENV_DIR="/Users/runner/venv"
           "$BREW_PYTHON" -m venv --copies "$VENV_DIR"
           VENV_PYTHON="$VENV_DIR/bin/python"

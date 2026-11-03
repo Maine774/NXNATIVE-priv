@@ -84,20 +84,23 @@ jobs:
           7z | head -1
           dotnet --version
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install Python Dependencies
         run: |
           set -euo pipefail
-          # Use system Python 3.12 (pre-installed on macOS runner)
-          # python3 is symlinked to /Library/Frameworks/Python.framework/Versions/3.12/bin/python3
-          PYTHON_BIN="python3"
-          PIP_BIN="pip3"
-          echo "Using Python: $(which $PYTHON_BIN)"
-          $PYTHON_BIN --version
-          $PIP_BIN --version
+          # setup-python@v5 prepends toolcache Python to PATH
+          TOOLCACHE_PYTHON="/Users/runner/hostedtoolcache/Python/3.12.10/arm64/bin/python3"
+          echo "Using Python: $TOOLCACHE_PYTHON"
 
-          # Install packages to system site-packages (fine on CI runner)
-          $PIP_BIN install --upgrade pip setuptools wheel
-          $PIP_BIN install \
+          # Install packages using --prefix to create proper site-packages structure
+          # (--target puts packages directly in the dir, --prefix creates lib/pythonX.Y/site-packages)
+          PREFIX_DIR="/tmp/pyprefix"
+          "$TOOLCACHE_PYTHON" -m pip install --upgrade pip setuptools wheel --prefix "$PREFIX_DIR"
+          "$TOOLCACHE_PYTHON" -m pip install \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -105,13 +108,20 @@ jobs:
             zbic \
             "backports.zstd; python_version < '3.14'" \
             boto3 \
-            botocore
+            botocore \
+            --prefix "$PREFIX_DIR"
 
-          # Verify critical imports
-          $PYTHON_BIN -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          # The packages are now in $PREFIX_DIR/lib/python3.12/site-packages/
+          SITE_PACKAGES="$PREFIX_DIR/lib/python3.12/site-packages"
+          echo "=== Installed packages in $SITE_PACKAGES ==="
+          ls -la "$SITE_PACKAGES"/
 
-          # Export Python for subsequent steps
-          echo "VENV_PYTHON=$PYTHON_BIN" >> $GITHUB_ENV
+          # Verify critical imports using PYTHONPATH
+          PYTHONPATH="$SITE_PACKAGES:${PYTHONPATH:-}" "$TOOLCACHE_PYTHON" -c "import sys; print('Python path:', sys.path); import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+
+          # Export Python and PYTHONPATH for subsequent steps
+          echo "VENV_PYTHON=$TOOLCACHE_PYTHON" >> $GITHUB_ENV
+          echo "PYTHONPATH=$SITE_PACKAGES" >> $GITHUB_ENV
 
       - name: Prepare Keys
         run: |

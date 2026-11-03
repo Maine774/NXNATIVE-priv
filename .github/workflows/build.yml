@@ -95,10 +95,13 @@ jobs:
           # Use explicit toolcache Python and pip paths
           PYTHON="${{ runner.tool_cache }}/Python/3.12.10/arm64/bin/python3"
           PIP="${{ runner.tool_cache }}/Python/3.12.10/arm64/bin/pip3"
+          SITE_PACKAGES="${{ runner.tool_cache }}/Python/3.12.10/arm64/lib/python3.12/site-packages"
           echo "Using Python: $PYTHON"
           echo "Using Pip: $PIP"
-          "$PIP" install --upgrade pip setuptools wheel
-          "$PIP" install \
+          echo "Target site-packages: $SITE_PACKAGES"
+          # Install to toolcache site-packages explicitly
+          "$PIP" install --target "$SITE_PACKAGES" --upgrade pip setuptools wheel
+          "$PIP" install --target "$SITE_PACKAGES" \
             lz4 \
             "capstone>=5,<6" \
             fonttools \
@@ -108,7 +111,7 @@ jobs:
             boto3 \
             botocore
           # Verify critical imports
-          "$PYTHON" -c "import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
+          PYTHONPATH="$SITE_PACKAGES" "$PYTHON" -c "import lz4, capstone, fonttools, nsz, zbic, boto3, botocore; print('All imports OK')"
 
       - name: Prepare Keys
         run: |
